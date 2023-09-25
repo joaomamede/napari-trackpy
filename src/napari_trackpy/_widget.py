@@ -7,7 +7,7 @@ see: https://napari.org/stable/plugins/guides.html?#widgets
 Replace code below according to your needs.
 """
 from typing import TYPE_CHECKING
-
+import trackpy as tp
 from magicgui import magic_factory
 from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
@@ -24,14 +24,42 @@ class ExampleQWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
 
-        btn = QPushButton("Click me!")
+        btn = QPushButton("Identify Spots")
         btn.clicked.connect(self._on_click)
 
         self.setLayout(QHBoxLayout())
         self.layout().addWidget(btn)
 
     def _on_click(self):
-        print("napari has", len(self.viewer.layers), "layers")
+        # print("napari has", len(self.viewer.layers), "layers")
+        f = tp.locate(self.viewer.layers[2].data,5,minmass=500)
+        #manbearpig
+        _points = f.loc[:,['frame','y','x']]
+        _metadata = f.loc[:,['mass','size','ecc']]
+        self.viewer.add_points(f.loc[:,['frame','y','x']],properties=_metadata,**points_options)
+
+
+
+# _frame = 1 #@param {type:"integer"}
+# #@markdown ---
+# #@markdown ### Enter the intensity cut
+# _mass = 500#@param {type:"slider", min:0, max:1e5, step:100}
+
+# #@markdown ---
+# #@markdown ### Enter the diameter of the particle expected
+# _diam = 5 #@param {type:"slider", min:3, max:19, step:2}
+
+# f = tp.batch(a,_diam,minmass=_mass,
+# #              processes=-1,
+#              engine='numba'
+#             )
+
+
+# f = f[((f['mass'] > _mass) & (f['size'] < 2.25)
+# #        & (f['mass'] < 4e6)
+#              &          (f['ecc'] < 0.5)
+#             )
+#            ]
 
 
 @magic_factory
