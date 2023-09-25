@@ -15,8 +15,8 @@ contributions:
       python_name: napari_trackpy._sample_data:make_sample_data
       title: Load sample data from Napari trackpy detection
     - id: napari-trackpy.make_qwidget
-      python_name: napari_trackpy._widget:ExampleQWidget
-      title: Make example QWidget
+      python_name: napari_trackpy._widget:IdentifyQWidget
+      title: Identify Spots
     - id: napari-trackpy.make_magic_widget
       python_name: napari_trackpy._widget:example_magic_widget
       title: Make example magic widget
@@ -40,9 +40,9 @@ contributions:
       key: unique_id.1
   widgets:
     - command: napari-trackpy.make_qwidget
-      display_name: Example QWidget
-    - command: napari-trackpy.make_magic_widget
-      display_name: Example Magic Widget
-    - command: napari-trackpy.make_func_widget
-      autogenerate: true
-      display_name: Example Function Widget
+      display_name: Identify Spots
+    # - command: napari-trackpy.make_magic_widget
+    #   display_name: Example Magic Widget
+    # - command: napari-trackpy.make_func_widget
+    #   autogenerate: true
+    #   display_name: Example Function Widget
