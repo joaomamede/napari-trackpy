@@ -244,7 +244,15 @@ class IdentifyQWidget(QWidget):
         import pandas as pd
         ##TODO
         ##pull from points layer see example below
-        self.f.to_csv(self.filename_edit.text())
+        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
+            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
+        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) > 3:
+            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
+        b = self.viewer.layers.selection.active.properties
+        for key in b.keys():
+            df[key] = b[key]
+        df.to_csv(self.filename_edit.text())
+        
 
 
 class LinkingQWidget(QWidget):
@@ -349,9 +357,13 @@ class LinkingQWidget(QWidget):
     def _track(self):
         import pandas as pd
         ##if 2d
-        df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
-        ##if 3d
-        # df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
+        #this is from the other widget..dang
+        # self.layersbox.currentIndex()
+        #ALTERNATIVE:if there is a column named 'z'
+        if len(self.viewer.layers[0].data.shape) <= 3:
+            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
+        elif len(self.viewer.layers[0].data.shape) > 3:
+            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
         b = self.viewer.layers.selection.active.properties
         for key in b.keys():
             df[key] = b[key]
