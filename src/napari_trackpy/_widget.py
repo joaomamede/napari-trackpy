@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING
 import trackpy as tp
 from magicgui import magic_factory
 from qtpy.QtWidgets import QVBoxLayout, QHBoxLayout,QPushButton, QCheckBox, QComboBox, QSpinBox
-from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget
+from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget, QGridLayout
+from qtpy.QtWidgets import QSpacerItem, QSizePolicy, QFileDialog, QLineEdit
 from napari.qt.threading import thread_worker
 
 if TYPE_CHECKING:
@@ -21,6 +22,7 @@ class IdentifyQWidget(QWidget):
     # in one of two ways:
     # 1. use a parameter called `napari_viewer`, as done here
     # 2. use a type annotation of 'napari.viewer.Viewer' for any parameter
+
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
@@ -31,7 +33,7 @@ class IdentifyQWidget(QWidget):
         self.llayer.setText("Layer to detect")
         self.layersbox = QComboBox()
         self.layersbox.currentIndexChanged.connect(self._select_layer)
-        self._populate_layers()
+        
 
         l1 = QLabel()
         l1.setText("Mass Threshold")
@@ -101,8 +103,15 @@ class IdentifyQWidget(QWidget):
 
         btn = QPushButton("Identify Spots")
         btn.clicked.connect(self._on_click)
-        btn2 = QPushButton("Filter with new settings from already identified")
-        btn2.clicked.connect(self._on_click2)
+        self.btn2 = QPushButton("Filter with new settings from already identified")
+        self.btn2.setEnabled(False)
+        self.btn2.clicked.connect(self._on_click2)
+
+        layoutSpacer = QSpacerItem(5, 5, QSizePolicy.Minimum, QSizePolicy.Expanding) 
+        # self.save_spots = QFileDialog()
+        save_btn = QPushButton("Save current Spots")
+        save_btn.clicked.connect(self._save_results)
+        # line0 = QSplitter()
 
         self.setLayout(QVBoxLayout())
         self.layout().addWidget(self.llayer)
@@ -118,11 +127,50 @@ class IdentifyQWidget(QWidget):
         self.layout().addLayout(self.layoutH1)
         self.layout().addLayout(self.layoutH2)
         self.layout().addWidget(btn)
-        self.layout().addWidget(btn2)
+        self.layout().addWidget(self.btn2)
+        # self.layout.addSpacing(10)
+        self.layout().addSpacerItem(layoutSpacer)
+
+        file_browse = QPushButton('Browse')
+        file_browse.clicked.connect(self.open_file_dialog)
+        self.filename_edit = QLineEdit()
+        self.filename_edit.setText("/tmp/test2.csv")
+        grid_layout = QGridLayout()
+        grid_layout.addWidget(QLabel('File:'), 0, 0)
+        grid_layout.addWidget(self.filename_edit, 0, 1)
+        grid_layout.addWidget(file_browse, 0 ,2)
+        self.layout().addLayout(grid_layout)
+        self.layout().addWidget(save_btn)
+
+        
+        self._populate_layers()
+        self.viewer.layers.events.removed.connect(self._populate_layers)
+        self.viewer.layers.events.inserted.connect(self._populate_layers)
+        self.viewer.layers.events.reordered.connect(self._populate_layers)
+        # self._connect_layer()
     
+   
     def _populate_layers(self):
+        self.layersbox.clear()
         for layer in self.viewer.layers:
-            self.layersbox.addItem(layer.name)
+            if layer._type_string == 'image':
+                self.layersbox.addItem(layer.name)
+
+    # def _connect_layer(self):
+    #     self.viewer.layers.events.changed.connect(self._populate_layers)
+
+    def open_file_dialog(self):
+        from pathlib import Path
+        filename, ok = QFileDialog.getSaveFileName(
+            self,
+            "Select a File", 
+            "/tmp/", 
+            "Comma Separated Files (*.csv)"
+        )
+        if filename:
+            path = Path(filename)
+            self.filename_edit.setText(str(path))
+
 
     def _select_layer(self,i):
         print("Layer to detect:", i, self.layersbox.currentIndex())
@@ -145,24 +193,26 @@ class IdentifyQWidget(QWidget):
         elif len(self.viewer.layers[0].data.shape) == 2:
             self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data,self.diameter_input.value(),minmass=self.mass_slider.value())
             self.f['frame'] = 0
-        
-        
-        print(self.f)
-        if len(self.viewer.layers[0].data.shape) <= 3:
-            _points = self.f.loc[:,['frame','y','x']]
-        elif len(self.viewer.layers[0].data.shape) > 3:
-            _points = self.f.loc[:,['frame','z','y','x']]
-        _metadata = self.f.loc[:,['mass','size','ecc']]
-        #TODO
+                #TODO
         if self.ecc_tick.isChecked():
                 self.f = self.f[ (self.f['ecc'] < self.ecc_input.value())
                    ]
         if self.size_filter_tick.isChecked():
                 self.f = self.f[ (self.f['ecc'] < self.size_filter_input.value())
                    ]
+        
+        print(self.f)
+        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
+            _points = self.f.loc[:,['frame','y','x']]
+        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) > 3:
+            _points = self.f.loc[:,['frame','z','y','x']]
+        _metadata = self.f.loc[:,['mass','size','ecc']]
+
         #add the filters here if check size ..if ecc...
         self._points_layer = self.viewer.add_points(_points,properties=_metadata,**self.points_options)
         self._points_layer.scale = self.viewer.layers[self.layersbox.currentIndex()].scale
+
+        self.btn2.setEnabled(True)
 
     # @thread_worker
     def _on_click2(self):
@@ -179,48 +229,142 @@ class IdentifyQWidget(QWidget):
         f2 = f2[(self.f['mass'] > self.mass_slider.value())    
                    ]
 
-        if len(self.viewer.layers[0].data.shape) <= 3:
+        
+        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
             _points = f2.loc[:,['frame','y','x']]
-        elif len(self.viewer.layers[0].data.shape) > 3:
+        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) > 3:
             _points = f2.loc[:,['frame','z','y','x']]
 
         _metadata = f2.loc[:,['mass','size','ecc']]
+        self.f2 = f2
         self._points_layer_filter = self.viewer.add_points(_points,properties=_metadata,**self.points_options2)
         self._points_layer_filter.scale = self.viewer.layers[self.layersbox.currentIndex()].scale
 
+    def _save_results(self):
+        import pandas as pd
+        ##TODO
+        ##pull from points layer see example below
+        self.f.to_csv(self.filename_edit.text())
 
 
+class LinkingQWidget(QWidget):
+    # your QWidget.__init__ can optionally request the napari viewer instance
+    # in one of two ways:
+    # 1. use a parameter called `napari_viewer`, as done here
+    # 2. use a type annotation of 'napari.viewer.Viewer' for any parameter
+    def __init__(self, napari_viewer):
+        super().__init__()
+        self.viewer = napari_viewer
+
+        l5 = QLabel()
+        l5.setText("Max Distance")
+        self.distance = QSpinBox()
+        self.distance.setRange(0,512)
+        self.distance.setSingleStep(1)
+        self.distance.setValue(20)
+        self.layout_link_H0 = QHBoxLayout()
+        self.layout_link_H0.addWidget(l5)
+        self.layout_link_H0.addWidget(self.distance
+                                )
+        l6 = QLabel()
+        l6.setText("Memory parameter")
+        self.memory = QSpinBox()
+        self.memory.setRange(0, 10)
+        self.memory.setSingleStep(1)
+        self.memory.setValue(3)
+        self.layout_link_H1 = QHBoxLayout()
+        self.layout_link_H1.addWidget(l6)
+        self.layout_link_H1.addWidget(self.memory)
 
 
-# _frame = 1 #@param {type:"integer"}
-# #@markdown ---
-# #@markdown ### Enter the intensity cut
-# _mass = 500#@param {type:"slider", min:0, max:1e5, step:100}
+        l7 = QLabel()
+        l7.setText("Filter Stubs")
+        self.layout_link_H2 = QHBoxLayout()
+        self.stubs_tick = QCheckBox()
+        # self.stubs_tick.setChecked(True)
+        self.stubs_input = QSpinBox()
+        self.stubs_input.setRange(0, 200)
+        self.stubs_input.setSingleStep(1)
+        self.stubs_input.setValue(5)
 
-# #@markdown ---
-# #@markdown ### Enter the diameter of the particle expected
-# _diam = 5 #@param {type:"slider", min:3, max:19, step:2}
+        self.layout_link_H2.addWidget(l7)
+        self.layout_link_H2.addWidget(self.stubs_tick)
+        self.layout_link_H2.addWidget(self.stubs_input)         
+        self.layout_link_H2.setEnabled(False)
+        
+        self.btn = QPushButton("Track everything")
+        self.btn.clicked.connect(self._track)
+        self.btn.setEnabled(False)
+        self._enable_tracking()
+        self.setLayout(QVBoxLayout())
+        self.layout().addLayout(self.layout_link_H0)
+        self.layout().addLayout(self.layout_link_H1)
+        self.layout().addLayout(self.layout_link_H2)
+        self.layout().addWidget(self.btn)
 
-# f = tp.batch(a,_diam,minmass=_mass,
-# #              processes=-1,
-#              engine='numba'
-#             )
+        self.viewer.layers.events.removed.connect(self._enable_tracking)
+        self.viewer.layers.events.inserted.connect(self._enable_tracking)
+        self.viewer.layers.events.reordered.connect(self._enable_tracking)
+        #Selecting
+        # self.viewer.layers.events.selecting.connect(self._enable_tracking)
 
+        file_browse = QPushButton('Browse')
+        file_browse.clicked.connect(self.open_file_dialog)
+        self.filename_edit_links = QLineEdit()
+        self.filename_edit_links.setText("/tmp/test3.csv")
+        grid_layout = QGridLayout()
+        grid_layout.addWidget(QLabel('File:'), 0, 0)
+        grid_layout.addWidget(self.filename_edit_links, 0, 1)
+        grid_layout.addWidget(file_browse, 0 ,2)
+        self.layout().addLayout(grid_layout)
 
-# f = f[((f['mass'] > _mass) & (f['size'] < 2.25)
-# #        & (f['mass'] < 4e6)
-#              &          (f['ecc'] < 0.5)
-#             )
-#            ]
+        # self.save_spots = QFileDialog()
+        save_btn = QPushButton("Save current Spots")
+        save_btn.clicked.connect(self._save_results_links)
+        self.layout().addWidget(save_btn)
 
+    def open_file_dialog(self):
+        from pathlib import Path
+        filename, ok = QFileDialog.getSaveFileName(
+            self,
+            "Select a File", 
+            "/tmp/", 
+            "Comma Separated Files (*.csv)"
+        )
+        if filename:
+            path = Path(filename)
+            self.filename_edit.setText(str(path))
 
-@magic_factory
-def example_magic_widget(img_layer: "napari.layers.Image"):
-    print(f"you have selected {img_layer}")
+    def _save_results_links(self):
+        import pandas as pd
+        self.links.to_csv(self.filename_edit_links.text())
 
+    def _enable_tracking(self):
+        self.btn.setEnabled(False)
+        if len(self.viewer.layers.selection) == 1:
+            if self.viewer.layers.selection.active._type_string == 'points':
+                #if  self.viewer.layers.selection.active.data == more than one time:
+                self.btn.setEnabled(True)
 
-# Uses the `autogenerate: true` flag in the plugin manifest
-# to indicate it should be wrapped as a magicgui to autogenerate
-# a widget.
-def example_function_widget(img_layer: "napari.layers.Image"):
-    print(f"you have selected {img_layer}")
+    def _track(self):
+        import pandas as pd
+        ##if 2d
+        df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
+        ##if 3d
+        # df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
+        b = self.viewer.layers.selection.active.properties
+        for key in b.keys():
+            df[key] = b[key]
+
+        print(df)
+        links = tp.link(df, search_range=self.distance.value(),memory=self.memory.value())
+        if self.stubs_tick.isChecked():
+            links = tp.filter_stubs(links, self.stubs_input.value())
+        #if 2D:
+        _tracks = links.loc[:,['particle','frame','y','x']]
+        #if 3d:
+        # _tracks = links.loc[:,['particle','frame','z','y','x']]
+
+        self.viewer.add_tracks(_tracks,name='trackpy')
+        self.links = links
+        print(links)

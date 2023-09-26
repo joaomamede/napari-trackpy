@@ -2,45 +2,45 @@ name: napari-trackpy
 display_name: Napari trackpy detection
 contributions:
   commands:
-    - id: napari-trackpy.get_reader
-      python_name: napari_trackpy._reader:napari_get_reader
-      title: Open data with Napari trackpy detection
-    - id: napari-trackpy.write_multiple
-      python_name: napari_trackpy._writer:write_multiple
-      title: Save multi-layer data with Napari trackpy detection
-    - id: napari-trackpy.write_single_image
-      python_name: napari_trackpy._writer:write_single_image
-      title: Save image data with Napari trackpy detection
-    - id: napari-trackpy.make_sample_data
-      python_name: napari_trackpy._sample_data:make_sample_data
-      title: Load sample data from Napari trackpy detection
+    # - id: napari-trackpy.get_reader
+    #   python_name: napari_trackpy._reader:napari_get_reader
+    #   title: Open data with Napari trackpy detection
+    # - id: napari-trackpy.write_multiple
+    #   python_name: napari_trackpy._writer:write_multiple
+    #   title: Save multi-layer data with Napari trackpy detection
+    # - id: napari-trackpy.write_single_image
+    #   python_name: napari_trackpy._writer:write_single_image
+    #   title: Save image data with Napari trackpy detection
+    # - id: napari-trackpy.make_sample_data
+    #   python_name: napari_trackpy._sample_data:make_sample_data
+    #   title: Load sample data from Napari trackpy detection
     - id: napari-trackpy.make_qwidget
       python_name: napari_trackpy._widget:IdentifyQWidget
       title: Identify Spots
-    - id: napari-trackpy.make_magic_widget
-      python_name: napari_trackpy._widget:example_magic_widget
-      title: Make example magic widget
-    - id: napari-trackpy.make_func_widget
-      python_name: napari_trackpy._widget:example_function_widget
-      title: Make example function widget
-  readers:
-    - command: napari-trackpy.get_reader
-      accepts_directories: false
-      filename_patterns: ['*.npy']
-  writers:
-    - command: napari-trackpy.write_multiple
-      layer_types: ['image*','labels*']
-      filename_extensions: []
-    - command: napari-trackpy.write_single_image
-      layer_types: ['image']
-      filename_extensions: ['.npy']
-  sample_data:
-    - command: napari-trackpy.make_sample_data
-      display_name: Napari trackpy detection
-      key: unique_id.1
+    - id: napari-trackpy.make_qwidget2
+      python_name: napari_trackpy._widget:LinkingQWidget
+      title: Linking spots
+  # readers:
+  #   - command: napari-trackpy.get_reader
+  #     accepts_directories: false
+  #     filename_patterns: ['*.npy']
+  # writers:
+  #   - command: napari-trackpy.write_multiple
+  #     layer_types: ['image*','labels*']
+  #     filename_extensions: []
+  #   - command: napari-trackpy.write_single_image
+  #     layer_types: ['image']
+  #     filename_extensions: ['.npy']
+  # sample_data:
+    # - command: napari-trackpy.make_sample_data
+    #   display_name: Napari trackpy detection
+    #   key: unique_id.1
   widgets:
     - command: napari-trackpy.make_qwidget
       display_name: Identify Spots
+    - command: napari-trackpy.make_qwidget2
+      display_name: Linking Spots
+
     # - command: napari-trackpy.make_magic_widget
     #   display_name: Example Magic Widget
     # - command: napari-trackpy.make_func_widget
