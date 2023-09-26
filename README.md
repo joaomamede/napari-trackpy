@@ -21,17 +21,17 @@ and review the napari docs for plugin developers:
 https://napari.org/stable/plugins/index.html
 -->
 
-## Installation
-
-You can install `napari-trackpy` via [pip]:
-
-    pip install napari-trackpy
 
 
 
 To install latest development version :
 
     pip install git+https://github.com/joaomamede/napari-trackpy.git
+
+## Example Work-In-Progress
+
+
+https://github.com/joaomamede/napari-trackpy/assets/46799914/b7fb3fbd-56e0-475c-9fb4-ec30f9e886ab
 
 
 ## Contributing
