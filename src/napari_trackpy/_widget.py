@@ -17,6 +17,7 @@ from napari.qt.threading import thread_worker
 if TYPE_CHECKING:
     import napari
 
+
 class IdentifyQWidget(QWidget):
     # your QWidget.__init__ can optionally request the napari viewer instance
     # in one of two ways:
@@ -134,7 +135,7 @@ class IdentifyQWidget(QWidget):
         file_browse = QPushButton('Browse')
         file_browse.clicked.connect(self.open_file_dialog)
         self.filename_edit = QLineEdit()
-        self.filename_edit.setText("/tmp/test2.csv")
+        self.filename_edit.setText(self._get_open_filename()+"_Spots.csv")
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
         grid_layout.addWidget(self.filename_edit, 0, 1)
@@ -144,24 +145,42 @@ class IdentifyQWidget(QWidget):
 
         
         self._populate_layers()
-        self.viewer.layers.events.removed.connect(self._populate_layers)
-        self.viewer.layers.events.inserted.connect(self._populate_layers)
-        self.viewer.layers.events.reordered.connect(self._populate_layers)
+        self.viewer.layers.events.removed.connect(self._refresh_layers)
+        self.viewer.layers.events.inserted.connect(self._refresh_layers)
+        self.viewer.layers.events.reordered.connect(self._refresh_layers)
         # self._connect_layer()
     
-   
+    def _get_open_filename(self):
+        from napari.utils import history
+        _last_folder = history.get_open_history()[0]
+        for i in range(len(self.viewer.layers)-1,-1,-1):
+            if self.viewer.layers[i]._type_string == 'image':
+                _filename = self.viewer.layers[i].name.split(" :: ")[0]
+                _filename = _last_folder +"/"+ _filename
+                break
+        return _filename
+    
     def _populate_layers(self):
+        # self.layersbox.clear()
+        for layer in self.viewer.layers:
+            if layer._type_string == 'image':
+                self.layersbox.addItem(layer.name)
+
+    def _refresh_layers(self):
+        i = self.layersbox.currentIndex()
         self.layersbox.clear()
         for layer in self.viewer.layers:
             if layer._type_string == 'image':
                 self.layersbox.addItem(layer.name)
+        self.layersbox.setCurrentIndex(i)
 
     # def _connect_layer(self):
     #     self.viewer.layers.events.changed.connect(self._populate_layers)
 
     def open_file_dialog(self):
         from pathlib import Path
-        filename, ok = QFileDialog.getSaveFileName(
+        filename, ok = QFileDialog.getSave
+        FileName(
             self,
             "Select a File", 
             "/tmp/", 
@@ -198,7 +217,7 @@ class IdentifyQWidget(QWidget):
                 self.f = self.f[ (self.f['ecc'] < self.ecc_input.value())
                    ]
         if self.size_filter_tick.isChecked():
-                self.f = self.f[ (self.f['ecc'] < self.size_filter_input.value())
+                self.f = self.f[ (self.f['size'] < self.size_filter_input.value())
                    ]
         
         print(self.f)
@@ -224,7 +243,7 @@ class IdentifyQWidget(QWidget):
             f2 = f2[ (f2['ecc'] < self.ecc_input.value())
                    ]
         if self.size_filter_tick.isChecked():
-            f2 = f2[ (f2['ecc'] < self.size_filter_input.value())
+            f2 = f2[ (f2['size'] < self.size_filter_input.value())
                    ]
         f2 = f2[(self.f['mass'] > self.mass_slider.value())    
                    ]
@@ -252,8 +271,6 @@ class IdentifyQWidget(QWidget):
         for key in b.keys():
             df[key] = b[key]
         df.to_csv(self.filename_edit.text())
-        
-
 
 class LinkingQWidget(QWidget):
     # your QWidget.__init__ can optionally request the napari viewer instance
@@ -319,7 +336,7 @@ class LinkingQWidget(QWidget):
         file_browse = QPushButton('Browse')
         file_browse.clicked.connect(self.open_file_dialog)
         self.filename_edit_links = QLineEdit()
-        self.filename_edit_links.setText("/tmp/test3.csv")
+        self.filename_edit_links.setText(self._get_open_filename()+"_Tracks.csv")
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
         grid_layout.addWidget(self.filename_edit_links, 0, 1)
@@ -343,6 +360,16 @@ class LinkingQWidget(QWidget):
             path = Path(filename)
             self.filename_edit.setText(str(path))
 
+    def _get_open_filename(self):
+        from napari.utils import history
+        _last_folder = history.get_open_history()[0]
+        for i in range(len(self.viewer.layers)-1,-1,-1):
+            if self.viewer.layers[i]._type_string == 'image':
+                _filename = self.viewer.layers[i].name.split(" :: ")[0]
+                _filename = _last_folder +"/"+ _filename
+                break
+        return _filename
+    
     def _save_results_links(self):
         import pandas as pd
         self.links.to_csv(self.filename_edit_links.text())
@@ -380,3 +407,4 @@ class LinkingQWidget(QWidget):
         self.viewer.add_tracks(_tracks,name='trackpy')
         self.links = links
         print(links)
+
