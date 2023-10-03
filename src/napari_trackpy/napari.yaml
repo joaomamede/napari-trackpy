@@ -20,6 +20,9 @@ contributions:
     - id: napari-trackpy.make_qwidget2
       python_name: napari_trackpy._widget:LinkingQWidget
       title: Linking spots
+    - id: napari-trackpy.make_qwidget3
+      python_name: napari_trackpy._widget:ColocalizationQWidget
+      title: Linking spots
   # readers:
   #   - command: napari-trackpy.get_reader
   #     accepts_directories: false
@@ -40,7 +43,8 @@ contributions:
       display_name: Identify Spots
     - command: napari-trackpy.make_qwidget2
       display_name: Linking Spots
-
+    - command: napari-trackpy.make_qwidget3
+      display_name: Colocalize spots Spots
     # - command: napari-trackpy.make_magic_widget
     #   display_name: Example Magic Widget
     # - command: napari-trackpy.make_func_widget

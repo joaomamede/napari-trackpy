@@ -13,11 +13,45 @@ from qtpy.QtWidgets import QVBoxLayout, QHBoxLayout,QPushButton, QCheckBox, QCom
 from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget, QGridLayout
 from qtpy.QtWidgets import QSpacerItem, QSizePolicy, QFileDialog, QLineEdit
 from napari.qt.threading import thread_worker
+import numpy as np
 
 if TYPE_CHECKING:
     import napari
 
+def make_labels_trackpy_links(image,j,size=5,_round=False):
+    import trackpy as tp
+    import scipy.ndimage as ndi
+    from scipy.ndimage import binary_dilation
 
+
+    #outputsomehow is 3D, we want 2
+    coords = np.dstack((round(j.y),round(j.x)))[0].astype(int)
+
+    #this is super slow
+    # ~ masks = tp.masks.mask_image(coords,np.ones(image.shape),size/2)
+
+    #This is faster
+    r = (size-1)/2 # Radius of circles
+    #make 3D compat
+    disk_mask = tp.masks.binary_mask(r,image.ndim)
+    # Initialize output array and set the maskcenters as 1s
+    out = np.zeros(image.shape,dtype=bool)
+    #check if there's a problem with subpixel masking
+    out[coords[:,0],coords[:,1]] = 1
+    # Use binary dilation to get the desired output
+    out = binary_dilation(out,disk_mask)
+
+
+    labels, nb = ndi.label(out)
+    if _round:
+        return labels, coords
+    else:
+        if image.ndim == 2:
+            # coords = j.loc[:,['particle','frame','y','x']]
+            coords = j.loc[:,['frame','y','x']]
+#             coords = np.dstack((j.particle,j.y,j.x))[0]
+            return labels, coords
+#     return labels, coords
 class IdentifyQWidget(QWidget):
     # your QWidget.__init__ can optionally request the napari viewer instance
     # in one of two ways:
@@ -192,46 +226,114 @@ class IdentifyQWidget(QWidget):
 
 
     def _select_layer(self,i):
+
+        ##should change it to name because it ignores non image layers
         print("Layer to detect:", i, self.layersbox.currentIndex())
         # self.llayer.setText(
 
+    def make_masks(self):
+        import pandas as pd
+        if len(self.viewer.layers[0].data.shape) <= 3:
+            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
+        elif len(self.viewer.layers[0].data.shape) > 3:
+            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
+        b = self.viewer.layers.selection.active.properties
+        for key in b.keys():
+            df[key] = b[key]
+
+        masks = np.zeros(self.viewer.layers[self.layersbox.currentIndex()].data.shape).astype('int64')
+        idx = []
+        # links.loc[:,['particle','frame','y','x']]
+
+
+        for i in df.frame.unique():
+            i = int(i)
+            temp = df[df['frame'] == i].sort_values(by=['y'])
+            #0 returns mask, 1 index returns coords
+            mask_temp, idx_temp = make_labels_trackpy_links(
+                self.viewer.layers[self.layersbox.currentIndex()].data[i],
+                # temp,size=self.diameter_input.value()-1)
+                temp,size=5-1)
+        #     print(mask_temp.max(),len(temp.index))
+        #     idx.append(idx_temp)
+            mask_fixed = np.copy(mask_temp)
+
+            ##this is needed when doing from links because all labels set as 'particles'
+            # for j in np.unique(mask_temp).astype('int'):
+            #     if j != 0:
+            #         # mask_fixed[mask_temp == j] = temp.iloc[j-1]['particle'].astype('int')
+            #         ##manbearpig
+            #         mask_fixed[mask_temp == j] = temp.iloc[j-1][:].astype('int')
+        #     print(np.unique(mask_fixed),temp['particle'].unique())
+            masks[i,...] = mask_fixed
+
+        return masks
+    
     # @thread_worker
     def _on_click(self):
-        # print("napari has", len(self.viewer.layers), "layers")
+
         print("Detecting points on:",self.layersbox.currentIndex())
-        if len(self.viewer.layers[0].data.shape) >= 3:
+        #if its time or Z
+        #locating steps
+        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) >= 3:
+            print("Detected more than 3 dimensions")
             if self.choice.isChecked():
+                print("Detected a Time lapse TYX or TZYX image")
                 a = self.viewer.layers[self.layersbox.currentIndex()].data[self.min_timer.value():self.max_timer.value()]
-                self.f = tp.batch(a,self.diameter_input.value(),minmass=self.mass_slider.value(),engine="numba")
+                self.f = tp.batch(a,self.diameter_input.value(),minmass=self.mass_slider.value(),
+                                engine="numba",
+                                #   processes=1,
+                                )
                 #TODO
                 #if min is not 0 we have to adjust F to bump it up
             else:
-                _time_locator = self.viewer.dims.current_step[0]
-                self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data[_time_locator],self.diameter_input.value(),minmass=self.mass_slider.value())
-                self.f['frame'] = _time_locator
-        elif len(self.viewer.layers[0].data.shape) == 2:
+                #there's possibility of improvement here. I did scale == 1 because I am assuming
+                #that the time index is scaled at 1
+                #however if there's a 1um Z stack it will bug
+                if self.viewer.layers[self.layersbox.currentIndex()].scale[0] != 1:
+                    print("Detected a ZYX image")
+                    self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data,self.diameter_input.value(),minmass=self.mass_slider.value())
+                    self.f['frame'] = 0
+                else:
+                    print("Detected a Time lapse ZYX  image")
+                    _time_locator = self.viewer.dims.current_step[0]
+                    self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data[_time_locator],self.diameter_input.value(),minmass=self.mass_slider.value())
+                    self.f['frame'] = _time_locator
+        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) == 2:
+            print("Detected only YX")
             self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data,self.diameter_input.value(),minmass=self.mass_slider.value())
             self.f['frame'] = 0
                 #TODO
-        if self.ecc_tick.isChecked():
-                self.f = self.f[ (self.f['ecc'] < self.ecc_input.value())
-                   ]
+        
+        #filtering steps
+        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
+            if self.ecc_tick.isChecked():
+                    self.f = self.f[ (self.f['ecc'] < self.ecc_input.value())
+                    ]
         if self.size_filter_tick.isChecked():
                 self.f = self.f[ (self.f['size'] < self.size_filter_input.value())
                    ]
         
-        print(self.f)
+        #transforming data to pandas ready for spots
         if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
-            _points = self.f.loc[:,['frame','y','x']]
+            #XYZ
+            if self.viewer.layers[self.layersbox.currentIndex()].scale[0] != 1:
+                _points = self.f.loc[:,['frame','z','y','x']]
+            #TYX PRJ
+            else:    
+                _points = self.f.loc[:,['frame','y','x']]
+        #TZYX
         elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) > 3:
             _points = self.f.loc[:,['frame','z','y','x']]
         _metadata = self.f.loc[:,['mass','size','ecc']]
 
-        #add the filters here if check size ..if ecc...
         self._points_layer = self.viewer.add_points(_points,properties=_metadata,**self.points_options)
         self._points_layer.scale = self.viewer.layers[self.layersbox.currentIndex()].scale
 
         self.btn2.setEnabled(True)
+
+        _masks = self.make_masks()
+        self._masks_layer = self.viewer.add_labels(_masks)
 
     # @thread_worker
     def _on_click2(self):
@@ -408,3 +510,107 @@ class LinkingQWidget(QWidget):
         self.links = links
         print(links)
 
+class ColocalizationQWidget(QWidget):
+
+    def __init__(self, napari_viewer):
+        super().__init__()
+        self.viewer = napari_viewer
+
+        l1 = QLabel('Points that are the "anchor"')
+        # l1.setText()
+        self.points_anchor = QComboBox()
+        self.points_anchor.currentIndexChanged.connect(self._select_layer)
+        
+        l2 = QLabel('Points that are the "comparison"')
+        # l2.setText('Points that are the "comparison"')
+        self.points_question = QComboBox()
+        self.points_question.currentIndexChanged.connect(self._select_layer)
+
+
+        self._populate_layers(self.points_anchor)
+        self._populate_layers(self.points_question)
+        self.viewer.layers.events.removed.connect(self._refresh_layers)
+        self.viewer.layers.events.inserted.connect(self._refresh_layers)
+        self.viewer.layers.events.reordered.connect(self._refresh_layers)
+        
+        l4 = QLabel("Max Distance (in sub-pixels)")
+        self.layoutH0 = QHBoxLayout()
+        self.euc_distance = QDoubleSpinBox()
+        self.euc_distance.setRange(0, 20)
+        self.euc_distance.setSingleStep(0.2)
+        self.euc_distance.setValue(5)
+        self.layoutH0.addWidget(l4)
+        self.layoutH0.addWidget(self.euc_distance)
+        #make label asking the distance (in pixel)
+        #QSpinBox for input
+        ##another label for translation to uM
+        run_btn = QPushButton("Run Colocalization")
+
+
+        run_btn.clicked.connect(self.calculate_colocalizing)
+        # save_btn = QPushButton("Save current colocalized Spots")
+        self.setLayout(QVBoxLayout())
+        self.layout().addWidget(l1)
+        self.layout().addWidget(self.points_anchor)
+
+        self.layout().addWidget(l2)
+        self.layout().addWidget(self.points_question)
+        self.layout().addLayout(self.layoutH0)
+        self.layout().addWidget(run_btn)
+
+
+    def calculate_colocalizing(self):
+        #makecode from notebooks
+        import scipy
+
+        QuestionPOS = self._get_points(self.points_question)
+        print(QuestionPOS)
+        AnchorPOS = self._get_points(self.points_anchor)
+        print(AnchorPOS)
+        question_kd = scipy.spatial.cKDTree(QuestionPOS,leafsize=10000)
+        distances_list = np.asarray(question_kd.query(AnchorPOS,p=2,
+                #distance_upper_bound=10*psize
+                ))[0]
+        _colocalizing = distances_list[distances_list < self.euc_distance.value()]
+        return _colocalizing
+
+    def _populate_layers(self,_widget):
+        # self.layersbox.clear()
+        for layer in self.viewer.layers:
+            if layer._type_string == 'points':
+                _widget.addItem(layer.name)
+
+    def _refresh_layers(self):
+        i = self.points_anchor.currentIndex()
+        self.points_anchor.clear()
+        for layer in self.viewer.layers:
+            if layer._type_string == 'points':
+                self.points_anchor.addItem(layer.name)
+        self.points_anchor.setCurrentIndex(i)
+
+        i = self.points_question.currentIndex()
+        self.points_question.clear()
+        for layer in self.viewer.layers:
+            if layer._type_string == 'points':
+                self.points_question.addItem(layer.name)
+        self.points_question.setCurrentIndex(i)
+
+    def _select_layer(self,i):
+        ##needs to be by name
+        print("Layer to detect:", i)
+        # self.llayer.setText(
+
+    def _get_points(self,_widget):
+        import pandas as pd
+        self.viewer.layers[_widget.currentIndex()].data
+        if len(self.viewer.layers[_widget.currentIndex()].data.shape) < 3:
+            df = pd.DataFrame(self.viewer.layers[_widget.currentIndex()].data, columns = ['frame','y','x'])
+        elif len(self.viewer.layers[_widget.currentIndex()].data.shape) >= 3:
+            df = pd.DataFrame(self.viewer.layers[_widget.currentIndex()].data, columns = ['frame','z','y','x'])
+        b = self.viewer.layers.selection.active.properties
+        for key in b.keys():
+            df[key] = b[key]
+
+
+    
+        return df
