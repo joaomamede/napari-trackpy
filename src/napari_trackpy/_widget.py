@@ -14,6 +14,7 @@ from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget, QGridLayout
 from qtpy.QtWidgets import QSpacerItem, QSizePolicy, QFileDialog, QLineEdit
 from napari.qt.threading import thread_worker
 import numpy as np
+# from './support_libraries' import make_labels_trackpy_links
 
 if TYPE_CHECKING:
     import napari
@@ -50,8 +51,9 @@ def make_labels_trackpy_links(image,j,size=5,_round=False):
             # coords = j.loc[:,['particle','frame','y','x']]
             coords = j.loc[:,['frame','y','x']]
 #             coords = np.dstack((j.particle,j.y,j.x))[0]
-            return labels, coords
-#     return labels, coords
+#             return labels, coords
+# #     return labels, coords
+
 class IdentifyQWidget(QWidget):
     # your QWidget.__init__ can optionally request the napari viewer instance
     # in one of two ways:
@@ -69,6 +71,7 @@ class IdentifyQWidget(QWidget):
         self.layersbox = QComboBox()
         self.layersbox.currentIndexChanged.connect(self._select_layer)
         
+        self._populate_layers()
 
         l1 = QLabel()
         l1.setText("Mass Threshold")
@@ -178,7 +181,7 @@ class IdentifyQWidget(QWidget):
         self.layout().addWidget(save_btn)
 
         
-        self._populate_layers()
+
         self.viewer.layers.events.removed.connect(self._refresh_layers)
         self.viewer.layers.events.inserted.connect(self._refresh_layers)
         self.viewer.layers.events.reordered.connect(self._refresh_layers)
@@ -226,13 +229,29 @@ class IdentifyQWidget(QWidget):
 
 
     def _select_layer(self,i):
-
+        
+        # for j,layer in enumerate(self.viewer.layers):
+        #     if layer.name == self.layersbox.value():
+        #         index_layer = j
+        #         break
+        # return index_layer
+        # # self.layersbox.currentIndex()
         ##should change it to name because it ignores non image layers
         print("Layer to detect:", i, self.layersbox.currentIndex())
         # self.llayer.setText(
-
+        # return j
+        
+    def _get_choice_layer(self,_widget):    
+        for j,layer in enumerate(self.viewer.layers):
+            if layer.name == _widget.currentText():
+                index_layer = j
+                break
+        return index_layer
+    
     def make_masks(self):
         import pandas as pd
+        index_layer = self._get_choice_layer(self.layersbox)
+
         if len(self.viewer.layers[0].data.shape) <= 3:
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
         elif len(self.viewer.layers[0].data.shape) > 3:
@@ -241,7 +260,7 @@ class IdentifyQWidget(QWidget):
         for key in b.keys():
             df[key] = b[key]
 
-        masks = np.zeros(self.viewer.layers[self.layersbox.currentIndex()].data.shape).astype('int64')
+        masks = np.zeros(self.viewer.layers[index_layer].data.shape).astype('int64')
         idx = []
         # links.loc[:,['particle','frame','y','x']]
 
@@ -251,7 +270,7 @@ class IdentifyQWidget(QWidget):
             temp = df[df['frame'] == i].sort_values(by=['y'])
             #0 returns mask, 1 index returns coords
             mask_temp, idx_temp = make_labels_trackpy_links(
-                self.viewer.layers[self.layersbox.currentIndex()].data[i],
+                self.viewer.layers[index_layer].data[i],
                 # temp,size=self.diameter_input.value()-1)
                 temp,size=5-1)
         #     print(mask_temp.max(),len(temp.index))
@@ -271,15 +290,15 @@ class IdentifyQWidget(QWidget):
     
     # @thread_worker
     def _on_click(self):
-
-        print("Detecting points on:",self.layersbox.currentIndex())
+        index_layer = self._get_choice_layer(self.layersbox)
+        print("Detecting points on layer:",index_layer)
         #if its time or Z
         #locating steps
-        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) >= 3:
+        if len(self.viewer.layers[index_layer].data.shape) >= 3:
             print("Detected more than 3 dimensions")
             if self.choice.isChecked():
                 print("Detected a Time lapse TYX or TZYX image")
-                a = self.viewer.layers[self.layersbox.currentIndex()].data[self.min_timer.value():self.max_timer.value()]
+                a = self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()]
                 self.f = tp.batch(a,self.diameter_input.value(),minmass=self.mass_slider.value(),
                                 engine="numba",
                                 #   processes=1,
@@ -290,23 +309,23 @@ class IdentifyQWidget(QWidget):
                 #there's possibility of improvement here. I did scale == 1 because I am assuming
                 #that the time index is scaled at 1
                 #however if there's a 1um Z stack it will bug
-                if self.viewer.layers[self.layersbox.currentIndex()].scale[0] != 1:
+                if self.viewer.layers[index_layer].scale[0] != 1:
                     print("Detected a ZYX image")
-                    self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data,self.diameter_input.value(),minmass=self.mass_slider.value())
+                    self.f = tp.locate(self.viewer.layers[index_layer].data,self.diameter_input.value(),minmass=self.mass_slider.value())
                     self.f['frame'] = 0
                 else:
                     print("Detected a Time lapse ZYX  image")
                     _time_locator = self.viewer.dims.current_step[0]
-                    self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data[_time_locator],self.diameter_input.value(),minmass=self.mass_slider.value())
+                    self.f = tp.locate(self.viewer.layers[index_layer].data[_time_locator],self.diameter_input.value(),minmass=self.mass_slider.value())
                     self.f['frame'] = _time_locator
-        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) == 2:
+        elif len(self.viewer.layers[index_layer].data.shape) == 2:
             print("Detected only YX")
-            self.f = tp.locate(self.viewer.layers[self.layersbox.currentIndex()].data,self.diameter_input.value(),minmass=self.mass_slider.value())
+            self.f = tp.locate(self.viewer.layers[index_layer].data,self.diameter_input.value(),minmass=self.mass_slider.value())
             self.f['frame'] = 0
                 #TODO
         
         #filtering steps
-        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
+        if len(self.viewer.layers[index_layer].data.shape) <= 3:
             if self.ecc_tick.isChecked():
                     self.f = self.f[ (self.f['ecc'] < self.ecc_input.value())
                     ]
@@ -315,20 +334,20 @@ class IdentifyQWidget(QWidget):
                    ]
         
         #transforming data to pandas ready for spots
-        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
+        if len(self.viewer.layers[index_layer].data.shape) <= 3:
             #XYZ
-            if self.viewer.layers[self.layersbox.currentIndex()].scale[0] != 1:
+            if self.viewer.layers[index_layer].scale[0] != 1:
                 _points = self.f.loc[:,['frame','z','y','x']]
             #TYX PRJ
             else:    
                 _points = self.f.loc[:,['frame','y','x']]
         #TZYX
-        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) > 3:
+        elif len(self.viewer.layers[index_layer].data.shape) > 3:
             _points = self.f.loc[:,['frame','z','y','x']]
         _metadata = self.f.loc[:,['mass','size','ecc']]
 
         self._points_layer = self.viewer.add_points(_points,properties=_metadata,**self.points_options)
-        self._points_layer.scale = self.viewer.layers[self.layersbox.currentIndex()].scale
+        self._points_layer.scale = self.viewer.layers[index_layer].scale
 
         self.btn2.setEnabled(True)
 
@@ -337,6 +356,7 @@ class IdentifyQWidget(QWidget):
 
     # @thread_worker
     def _on_click2(self):
+        index_layer = self._get_choice_layer(self.layersbox)
         # print("napari has", len(self.viewer.layers), "layers")
         # f = tp.locate(self.viewer.layers[2].data,5,minmass=500)
         f2 = self.f
@@ -351,23 +371,23 @@ class IdentifyQWidget(QWidget):
                    ]
 
         
-        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
+        if len(self.viewer.layers[index_layer].data.shape) <= 3:
             _points = f2.loc[:,['frame','y','x']]
-        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) > 3:
+        elif len(self.viewer.layers[index_layer].data.shape) > 3:
             _points = f2.loc[:,['frame','z','y','x']]
 
         _metadata = f2.loc[:,['mass','size','ecc']]
         self.f2 = f2
         self._points_layer_filter = self.viewer.add_points(_points,properties=_metadata,**self.points_options2)
-        self._points_layer_filter.scale = self.viewer.layers[self.layersbox.currentIndex()].scale
+        self._points_layer_filter.scale = self.viewer.layers[index_layer].scale
 
     def _save_results(self):
         import pandas as pd
         ##TODO
         ##pull from points layer see example below
-        if len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) <= 3:
+        if len(self.viewer.layers[index_layer].data.shape) <= 3:
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
-        elif len(self.viewer.layers[self.layersbox.currentIndex()].data.shape) > 3:
+        elif len(self.viewer.layers[index_layer].data.shape) > 3:
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
         b = self.viewer.layers.selection.active.properties
         for key in b.keys():
@@ -438,7 +458,8 @@ class LinkingQWidget(QWidget):
         file_browse = QPushButton('Browse')
         file_browse.clicked.connect(self.open_file_dialog)
         self.filename_edit_links = QLineEdit()
-        self.filename_edit_links.setText(self._get_open_filename()+"_Tracks.csv")
+        if len(self.viewer.layers) > 0:
+            self.filename_edit_links.setText(self._get_open_filename()+"_Tracks.csv")
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
         grid_layout.addWidget(self.filename_edit_links, 0, 1)
@@ -483,6 +504,7 @@ class LinkingQWidget(QWidget):
                 #if  self.viewer.layers.selection.active.data == more than one time:
                 self.btn.setEnabled(True)
 
+    
     def _track(self):
         import pandas as pd
         ##if 2d
@@ -519,12 +541,12 @@ class ColocalizationQWidget(QWidget):
         l1 = QLabel('Points that are the "anchor"')
         # l1.setText()
         self.points_anchor = QComboBox()
-        self.points_anchor.currentIndexChanged.connect(self._select_layer)
+        # self.points_anchor.currentIndexChanged.connect(self._select_layer)
         
         l2 = QLabel('Points that are the "comparison"')
         # l2.setText('Points that are the "comparison"')
         self.points_question = QComboBox()
-        self.points_question.currentIndexChanged.connect(self._select_layer)
+        # self.points_question.currentIndexChanged.connect(self._select_layer)
 
 
         self._populate_layers(self.points_anchor)
@@ -562,7 +584,7 @@ class ColocalizationQWidget(QWidget):
     def calculate_colocalizing(self):
         #makecode from notebooks
         import scipy
-
+        print("Doing Colocalization")
         QuestionPOS = self._get_points(self.points_question)
         print(QuestionPOS)
         AnchorPOS = self._get_points(self.points_anchor)
@@ -572,7 +594,12 @@ class ColocalizationQWidget(QWidget):
                 #distance_upper_bound=10*psize
                 ))[0]
         _colocalizing = distances_list[distances_list < self.euc_distance.value()]
-        return _colocalizing
+        print(len(_colocalizing))
+        l_coloc = QLabel("Number of colocalizing"+" "+len(_colocalizing)+" "+len(AnchorPOS)+" "+len(_colocalizing)/len(AnchorPOS))
+        self.layout().addWidget(l_coloc)
+        _colocalizing_points = AnchorPOS[distances_list < self.euc_distance.value()]
+        self.viewer.add_points(_colocalizing_points)
+        # return _colocalizing
 
     def _populate_layers(self,_widget):
         # self.layersbox.clear()
@@ -595,21 +622,47 @@ class ColocalizationQWidget(QWidget):
                 self.points_question.addItem(layer.name)
         self.points_question.setCurrentIndex(i)
 
-    def _select_layer(self,i):
-        ##needs to be by name
-        print("Layer to detect:", i)
-        # self.llayer.setText(
+    # def _select_layer(self,i):
+    #     ##needs to be by name
+    #     print("Layer to detect:", i)
+    #     # self.llayer.setText(
 
+    def _get_choice_layer(self,_widget):    
+        for j,layer in enumerate(self.viewer.layers):
+            if layer.name == _widget.currentText():
+                index_layer = j
+                break
+        print("Layer where points are is:",j)
+        return index_layer
+    
     def _get_points(self,_widget):
         import pandas as pd
-        self.viewer.layers[_widget.currentIndex()].data
-        if len(self.viewer.layers[_widget.currentIndex()].data.shape) < 3:
-            df = pd.DataFrame(self.viewer.layers[_widget.currentIndex()].data, columns = ['frame','y','x'])
-        elif len(self.viewer.layers[_widget.currentIndex()].data.shape) >= 3:
-            df = pd.DataFrame(self.viewer.layers[_widget.currentIndex()].data, columns = ['frame','z','y','x'])
-        b = self.viewer.layers.selection.active.properties
-        for key in b.keys():
-            df[key] = b[key]
+        _index_layer = self._get_choice_layer(_widget)
+        
+        # self.viewer.layers[_widget.currentIndex()].data
+        # if len(self.viewer.layers[_index_layer].data.shape) < 3:
+        #     df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
+        #     print("2D",df)
+        # elif len(self.viewer.layers[_widget.currentIndex()].data.shape) >= 3:
+        #     df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','z','y','x'])
+        #     print("3D",df)
+        # b = self.viewer.layers.selection.active.properties
+        # for key in b.keys():
+        #     df[key] = b[key]
+        _index_layer = self._get_choice_layer(_widget)
+        
+        # self.viewer.layers[0].data
+        if len(self.viewer.layers[0].data.shape) < 3:
+            df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
+            print("2D",df)
+        elif len(self.viewer.layers[0].data.shape) >= 3:
+            df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x'])
+            print("3D",df)
+
+        # b = self.viewer.layers.selection.active.properties
+        #error is here somehow now
+        # for key in b.keys():
+        #     df[key] = b[key]
 
 
     

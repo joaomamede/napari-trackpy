@@ -99,11 +99,10 @@ def make_labels_trackpy(image,mass,size=9,_separation=3,_numba=True,max_mass=0,_
             return None, coords
 
 
-
-def make_labels_trackpy_links(image,j,size=5):
+def make_labels_trackpy_links(image,j,size=5,_round=False):
     import trackpy as tp
     import scipy.ndimage as ndi
-    from scipy.ndimage.morphology import binary_dilation
+    from scipy.ndimage import binary_dilation
 
 
     #outputsomehow is 3D, we want 2
@@ -125,8 +124,15 @@ def make_labels_trackpy_links(image,j,size=5):
 
 
     labels, nb = ndi.label(out)
-
-    return labels, coords
+    if _round:
+        return labels, coords
+    else:
+        if image.ndim == 2:
+            # coords = j.loc[:,['particle','frame','y','x']]
+            coords = j.loc[:,['frame','y','x']]
+#             coords = np.dstack((j.particle,j.y,j.x))[0]
+            return labels, coords
+#     return labels, coords
 
 def simple_labels(image):
     labels, nb = ndi.label(image)
