@@ -76,7 +76,7 @@ class IdentifyQWidget(QWidget):
         l1 = QLabel()
         l1.setText("Mass Threshold")
         self.mass_slider = QSpinBox()
-        self.mass_slider.setRange(0, 1e6)
+        self.mass_slider.setRange(0, int(1e6))
         self.mass_slider.setSingleStep(200)
         self.mass_slider.setValue(500)
         l2 = QLabel()
