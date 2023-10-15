@@ -366,7 +366,9 @@ class IdentifyQWidget(QWidget):
                 else:
                     print("Detected a Time lapse ZYX  image")
                     _time_locator = self.viewer.dims.current_step[0]
-                    self.f = tp.locate(self.viewer.layers[index_layer].data[_time_locator],self.diameter_input.value(),minmass=self.mass_slider.value())
+                    #here
+                    img = np.asarray(self.viewer.layers[index_layer].data[_time_locator])
+                    self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value())
                     self.f['frame'] = _time_locator
         elif len(self.viewer.layers[index_layer].data.shape) == 2:
             print("Detected only YX")
