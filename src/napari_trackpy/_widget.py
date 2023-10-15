@@ -13,46 +13,106 @@ from qtpy.QtWidgets import QVBoxLayout, QHBoxLayout,QPushButton, QCheckBox, QCom
 from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget, QGridLayout
 from qtpy.QtWidgets import QSpacerItem, QSizePolicy, QFileDialog, QLineEdit
 from napari.qt.threading import thread_worker
+
+
+# viewer.layers[0].source.path
+
 import numpy as np
 # from './support_libraries' import make_labels_trackpy_links
 
 if TYPE_CHECKING:
     import napari
 
-def make_labels_trackpy_links(image,j,size=5,_round=False):
+def _get_open_filename(self,type='image',separator= " :: "):
+    from napari.utils import history
+    _last_folder = history.get_open_history()[0]
+    for i in range(len(self.viewer.layers)-1,-1,-1):
+        if self.viewer.layers[i]._type_string == type:
+            _filename = self.viewer.layers[i].name.split(separator)[0]
+            _filename = _last_folder +"/"+ _filename
+            break
+    return _filename
+
+# def open_file_dialog(self):
+#     from pathlib import Path
+#     filename, ok = QFileDialog.getSaveFileName(
+#         self,
+#         "Select a File", 
+#         #modify for last folder used
+#         "/tmp/", 
+#         "Comma Separated Files (*.csv)"
+#     )
+#     if filename:
+#         path = Path(filename)
+#         return str(path)
+#     else:
+#         return "/tmp/Null.csv"
+
+def _populate_layers(self,_widget,_type='image'):
+    # self.layersbox.clear()
+    for layer in self.viewer.layers:
+        if layer._type_string == _type:
+            _widget.addItem(layer.name)
+
+def _get_choice_layer(self,_widget):    
+    for j,layer in enumerate(self.viewer.layers):
+        if layer.name == _widget.currentText():
+            index_layer = j
+            break
+    print("Layer where points are is:",j)
+    return index_layer
+    
+def make_labels_trackpy_links(shape,j,radius=5,_round=False):
     import trackpy as tp
     import scipy.ndimage as ndi
     from scipy.ndimage import binary_dilation
-
+    import cupy as cp
 
     #outputsomehow is 3D, we want 2
-    coords = np.dstack((round(j.y),round(j.x)))[0].astype(int)
+    pos = cp.dstack((round(j.y),round(j.x)))[0].astype(int)
 
     #this is super slow
     # ~ masks = tp.masks.mask_image(coords,np.ones(image.shape),size/2)
 
+    ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
+    ndim = len(shape)
+    # radius = validate_tuple(radius, ndim)
+    pos = cp.atleast_2d(pos)
+
+    # if include_edge:
+    in_mask = cp.array([cp.sum(((cp.indices(shape).T - p) / radius)**2, -1) <= 1
+                   for p in pos])
+    # else:
+    #     in_mask = [np.sum(((np.indices(shape).T - p) / radius)**2, -1) < 1
+    #                for p in pos]
+    mask_total = cp.any(in_mask, axis=0).T
+
+    ##if they overlap the labels won't match the points
+    #we can make np.ones * ID of the point and then np.max(axis=-1)
+    labels, nb = ndi.label(cp.asnumpy(mask_total))
+    # image * mask_cluster.astype(np.uint8)
+
     #This is faster
-    r = (size-1)/2 # Radius of circles
-    #make 3D compat
-    disk_mask = tp.masks.binary_mask(r,image.ndim)
-    # Initialize output array and set the maskcenters as 1s
-    out = np.zeros(image.shape,dtype=bool)
-    #check if there's a problem with subpixel masking
-    out[coords[:,0],coords[:,1]] = 1
-    # Use binary dilation to get the desired output
-    out = binary_dilation(out,disk_mask)
+#     r = (size-1)/2 # Radius of circles
+#     #make 3D compat
+#     disk_mask = tp.masks.binary_mask(r,image.ndim)
+#     # Initialize output array and set the maskcenters as 1s
+#     out = np.zeros(image.shape,dtype=bool)
+#     #check if there's a problem with subpixel masking
+#     out[coords[:,0],coords[:,1]] = 1
+#     # Use binary dilation to get the desired output
+#     out = binary_dilation(out,disk_mask)
 
-
-    labels, nb = ndi.label(out)
-    if _round:
-        return labels, coords
-    else:
-        if image.ndim == 2:
-            # coords = j.loc[:,['particle','frame','y','x']]
-            coords = j.loc[:,['frame','y','x']]
-#             coords = np.dstack((j.particle,j.y,j.x))[0]
+#     labels, nb = ndi.label(out)
+#     if _round:
+#         return labels, coords
+#     else:
+#         if image.ndim == 2:
+#             # coords = j.loc[:,['particle','frame','y','x']]
+#             coords = j.loc[:,['frame','y','x']]
+#             # coords = np.dstack((j.particle,j.y,j.x))[0]
 #             return labels, coords
-# #     return labels, coords
+    return labels, pos
 
 class IdentifyQWidget(QWidget):
     # your QWidget.__init__ can optionally request the napari viewer instance
@@ -71,7 +131,7 @@ class IdentifyQWidget(QWidget):
         self.layersbox = QComboBox()
         self.layersbox.currentIndexChanged.connect(self._select_layer)
         
-        self._populate_layers()
+        _populate_layers(self,self.layersbox,"image")
 
         l1 = QLabel()
         l1.setText("Mass Threshold")
@@ -171,8 +231,9 @@ class IdentifyQWidget(QWidget):
 
         file_browse = QPushButton('Browse')
         file_browse.clicked.connect(self.open_file_dialog)
+        # file_browse.clicked.connect(open_file_dialog,self)
         self.filename_edit = QLineEdit()
-        self.filename_edit.setText(self._get_open_filename()+"_Spots.csv")
+        self.filename_edit.setText(_get_open_filename(self)+"_Spots.csv")
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
         grid_layout.addWidget(self.filename_edit, 0, 1)
@@ -185,24 +246,24 @@ class IdentifyQWidget(QWidget):
         self.viewer.layers.events.removed.connect(self._refresh_layers)
         self.viewer.layers.events.inserted.connect(self._refresh_layers)
         self.viewer.layers.events.reordered.connect(self._refresh_layers)
-        # self._connect_layer()
-    
-    def _get_open_filename(self):
-        from napari.utils import history
-        _last_folder = history.get_open_history()[0]
-        for i in range(len(self.viewer.layers)-1,-1,-1):
-            if self.viewer.layers[i]._type_string == 'image':
-                _filename = self.viewer.layers[i].name.split(" :: ")[0]
-                _filename = _last_folder +"/"+ _filename
-                break
-        return _filename
-    
-    def _populate_layers(self):
-        # self.layersbox.clear()
-        for layer in self.viewer.layers:
-            if layer._type_string == 'image':
-                self.layersbox.addItem(layer.name)
 
+        # self._connect_layer()
+
+    def open_file_dialog(self):
+        from pathlib import Path
+        filename, ok = QFileDialog.getSaveFileName(
+            self,
+            "Select a File", 
+            #modify for last folder used
+            "/tmp/", 
+            "Comma Separated Files (*.csv)"
+        )
+        if filename:
+            path = Path(filename)
+            return str(path)
+        else:
+            return "/tmp/Null.csv"
+    
     def _refresh_layers(self):
         i = self.layersbox.currentIndex()
         self.layersbox.clear()
@@ -211,21 +272,16 @@ class IdentifyQWidget(QWidget):
                 self.layersbox.addItem(layer.name)
         self.layersbox.setCurrentIndex(i)
 
+    # def _refresh_layers(self,_widget,_type='image'):
+    #     i = _widget.currentIndex()
+    #     _widget.clear()
+    #     for layer in self.viewer.layers:
+    #         if layer._type_string == 'image':
+    #             _widget.addItem(layer.name)
+    #     _widget.setCurrentIndex(i)
+
     # def _connect_layer(self):
     #     self.viewer.layers.events.changed.connect(self._populate_layers)
-
-    def open_file_dialog(self):
-        from pathlib import Path
-        filename, ok = QFileDialog.getSave
-        FileName(
-            self,
-            "Select a File", 
-            "/tmp/", 
-            "Comma Separated Files (*.csv)"
-        )
-        if filename:
-            path = Path(filename)
-            self.filename_edit.setText(str(path))
 
 
     def _select_layer(self,i):
@@ -241,18 +297,12 @@ class IdentifyQWidget(QWidget):
         # self.llayer.setText(
         # return j
         
-    def _get_choice_layer(self,_widget):    
-        for j,layer in enumerate(self.viewer.layers):
-            if layer.name == _widget.currentText():
-                index_layer = j
-                break
-        return index_layer
     
     def make_masks(self):
         import pandas as pd
-        index_layer = self._get_choice_layer(self.layersbox)
-
+        index_layer = _get_choice_layer(self,self.layersbox)
         if len(self.viewer.layers[0].data.shape) <= 3:
+            ##fix here to distinguish between ZYX TYX
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
         elif len(self.viewer.layers[0].data.shape) > 3:
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
@@ -270,9 +320,10 @@ class IdentifyQWidget(QWidget):
             temp = df[df['frame'] == i].sort_values(by=['y'])
             #0 returns mask, 1 index returns coords
             mask_temp, idx_temp = make_labels_trackpy_links(
-                self.viewer.layers[index_layer].data[i],
-                # temp,size=self.diameter_input.value()-1)
-                temp,size=5-1)
+                self.viewer.layers[index_layer].data[i].shape,
+                # self.viewer.layers[index_layer].data[i],
+                temp,radius=(self.diameter_input.value()-1)/2)
+                # temp,size=5-1)
         #     print(mask_temp.max(),len(temp.index))
         #     idx.append(idx_temp)
             mask_fixed = np.copy(mask_temp)
@@ -281,7 +332,6 @@ class IdentifyQWidget(QWidget):
             # for j in np.unique(mask_temp).astype('int'):
             #     if j != 0:
             #         # mask_fixed[mask_temp == j] = temp.iloc[j-1]['particle'].astype('int')
-            #         ##manbearpig
             #         mask_fixed[mask_temp == j] = temp.iloc[j-1][:].astype('int')
         #     print(np.unique(mask_fixed),temp['particle'].unique())
             masks[i,...] = mask_fixed
@@ -290,7 +340,7 @@ class IdentifyQWidget(QWidget):
     
     # @thread_worker
     def _on_click(self):
-        index_layer = self._get_choice_layer(self.layersbox)
+        index_layer = _get_choice_layer(self,self.layersbox)
         print("Detecting points on layer:",index_layer)
         #if its time or Z
         #locating steps
@@ -301,7 +351,7 @@ class IdentifyQWidget(QWidget):
                 a = self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()]
                 self.f = tp.batch(a,self.diameter_input.value(),minmass=self.mass_slider.value(),
                                 engine="numba",
-                                #   processes=1,
+                                  processes=1,
                                 )
                 #TODO
                 #if min is not 0 we have to adjust F to bump it up
@@ -356,7 +406,7 @@ class IdentifyQWidget(QWidget):
 
     # @thread_worker
     def _on_click2(self):
-        index_layer = self._get_choice_layer(self.layersbox)
+        index_layer = _get_choice_layer(self,self.layersbox)
         # print("napari has", len(self.viewer.layers), "layers")
         # f = tp.locate(self.viewer.layers[2].data,5,minmass=500)
         f2 = self.f
@@ -386,6 +436,7 @@ class IdentifyQWidget(QWidget):
         ##TODO
         ##pull from points layer see example below
         if len(self.viewer.layers[index_layer].data.shape) <= 3:
+            #manbearpig time lapse vs Zstack
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
         elif len(self.viewer.layers[index_layer].data.shape) > 3:
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
@@ -459,7 +510,7 @@ class LinkingQWidget(QWidget):
         file_browse.clicked.connect(self.open_file_dialog)
         self.filename_edit_links = QLineEdit()
         if len(self.viewer.layers) > 0:
-            self.filename_edit_links.setText(self._get_open_filename()+"_Tracks.csv")
+            self.filename_edit_links.setText(_get_open_filename(self)+"_Tracks.csv")
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
         grid_layout.addWidget(self.filename_edit_links, 0, 1)
@@ -482,16 +533,6 @@ class LinkingQWidget(QWidget):
         if filename:
             path = Path(filename)
             self.filename_edit.setText(str(path))
-
-    def _get_open_filename(self):
-        from napari.utils import history
-        _last_folder = history.get_open_history()[0]
-        for i in range(len(self.viewer.layers)-1,-1,-1):
-            if self.viewer.layers[i]._type_string == 'image':
-                _filename = self.viewer.layers[i].name.split(" :: ")[0]
-                _filename = _last_folder +"/"+ _filename
-                break
-        return _filename
     
     def _save_results_links(self):
         import pandas as pd
@@ -532,7 +573,11 @@ class LinkingQWidget(QWidget):
         self.links = links
         print(links)
 
+
+
 class ColocalizationQWidget(QWidget):
+    
+    # from support_libraries import _get_open_filename
 
     def __init__(self, napari_viewer):
         super().__init__()
@@ -548,9 +593,9 @@ class ColocalizationQWidget(QWidget):
         self.points_question = QComboBox()
         # self.points_question.currentIndexChanged.connect(self._select_layer)
 
+        _populate_layers(self,self.points_anchor,"points")
+        _populate_layers(self,self.points_question,"points")
 
-        self._populate_layers(self.points_anchor)
-        self._populate_layers(self.points_question)
         self.viewer.layers.events.removed.connect(self._refresh_layers)
         self.viewer.layers.events.inserted.connect(self._refresh_layers)
         self.viewer.layers.events.reordered.connect(self._refresh_layers)
@@ -567,9 +612,23 @@ class ColocalizationQWidget(QWidget):
         #QSpinBox for input
         ##another label for translation to uM
         run_btn = QPushButton("Run Colocalization")
-
-
         run_btn.clicked.connect(self.calculate_colocalizing)
+
+        file_browse = QPushButton('Browse')
+        file_browse.clicked.connect(self.open_file_dialog)
+        self.filename_edit = QLineEdit()
+        self.filename_edit.setText(_get_open_filename(self)+"_Spots_Coloc.csv")
+        grid_layout = QGridLayout()
+        grid_layout.addWidget(QLabel('File:'), 0, 0)
+        grid_layout.addWidget(self.filename_edit, 0, 1)
+        grid_layout.addWidget(file_browse, 0 ,2)
+
+
+
+
+        save_btn = QPushButton("Save current Spots")
+        save_btn.clicked.connect(self._save_results)
+
         # save_btn = QPushButton("Save current colocalized Spots")
         self.setLayout(QVBoxLayout())
         self.layout().addWidget(l1)
@@ -579,33 +638,98 @@ class ColocalizationQWidget(QWidget):
         self.layout().addWidget(self.points_question)
         self.layout().addLayout(self.layoutH0)
         self.layout().addWidget(run_btn)
+        self.layout().addLayout(grid_layout)
+        self.layout().addWidget(save_btn)
 
+    def _save_results(self):
+        import pandas as pd
+        ##TODO
+        ##pull from points layer see example below
+        if self.viewer.layers.selection.type == "points":
+            idx = self.viewer.layers.selection
+            _get_points(self)
+             #manbearpig   
+        # self.viewer.layers[0].data
+            if len(self.viewer.layers[0].data.shape) < 3:
+                df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
+                print("2D",df)
+            elif len(self.viewer.layers[0].data.shape) >= 3:
+                df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x'])
+                print("3D",df)
 
+            b = self.viewer.layers.selection.active.properties
+
+            df.to_csv(self.filename_edit.text().strip(".csv")+i+".csv")
+
+    def open_file_dialog(self):
+        from pathlib import Path
+        filename, ok = QFileDialog.getSave
+        FileName(
+            self,
+            "Select a File", 
+            "/tmp/", 
+            "Comma Separated Files (*.csv)"
+        )
+        if filename:
+            path = Path(filename)
+            self.filename_edit.setText(str(path))
+    
     def calculate_colocalizing(self):
         #makecode from notebooks
         import scipy
+        import pyqtgraph as pg
+        from sklearn.neighbors import KDTree
         print("Doing Colocalization")
         QuestionPOS = self._get_points(self.points_question)
         print(QuestionPOS)
         AnchorPOS = self._get_points(self.points_anchor)
         print(AnchorPOS)
-        question_kd = scipy.spatial.cKDTree(QuestionPOS,leafsize=10000)
-        distances_list = np.asarray(question_kd.query(AnchorPOS,p=2,
-                #distance_upper_bound=10*psize
-                ))[0]
+
+        #scipy way
+        # question_kd = scipy.spatial.cKDTree(QuestionPOS,
+        # leafsize=10000.
+        # # leafsize=0.
+        # )
+        # distances_list = np.asarray(question_kd.query(AnchorPOS,p=2,
+        #         #distance_upper_bound=10*psize
+        #         ))[0]
+        
+        #scikitlearn
+        
+        tree = KDTree(QuestionPOS, leaf_size=1)
+        distances_list = tree.query(AnchorPOS)[0]
+        
+        self._plt = pg.plot()
+        self.layout().addWidget(self._plt)
+        _hist,_bins = np.histogram(distances_list,bins=100)
+        # _plt.showGrid(x=True, y=True)()
+        print(distances_list,_bins,_hist)
+        line1 = self._plt.plot(
+            _bins[:-1],_hist,
+            #   distances_list, pen='g', symbol='x', symbolPen='g',
+            #   symbolBrush=0.2, name='green'
+            )
+ 
+        # _plt.setImage(distances_list
+        #               , xvals=np.linspace(0., 100., distances_list.shape[0]))
         _colocalizing = distances_list[distances_list < self.euc_distance.value()]
+        #
+        # print(tree.query_radius(AnchorPOS, r=self.euc_distance.value(), count_only=True))
+        # ind = tree.query_radius(AnchorPOS, r=self.euc_distance.value()) 
+
+        
         print(len(_colocalizing))
-        l_coloc = QLabel("Number of colocalizing"+" "+len(_colocalizing)+" "+len(AnchorPOS)+" "+len(_colocalizing)/len(AnchorPOS))
+        l_coloc = QLabel("Number of colocalizing"+" "+str(
+            len(_colocalizing))+" "+str(
+                len(AnchorPOS))+" "+str(
+                    len(_colocalizing)/len(AnchorPOS)))
         self.layout().addWidget(l_coloc)
         _colocalizing_points = AnchorPOS[distances_list < self.euc_distance.value()]
-        self.viewer.add_points(_colocalizing_points)
-        # return _colocalizing
+        coloc_points = self.viewer.add_points(_colocalizing_points)
+        coloc_points.scale = self.viewer.layers[0].scale
 
-    def _populate_layers(self,_widget):
-        # self.layersbox.clear()
-        for layer in self.viewer.layers:
-            if layer._type_string == 'points':
-                _widget.addItem(layer.name)
+        self._colocalizing_points = _colocalizing_points
+
 
     def _refresh_layers(self):
         i = self.points_anchor.currentIndex()
@@ -627,17 +751,11 @@ class ColocalizationQWidget(QWidget):
     #     print("Layer to detect:", i)
     #     # self.llayer.setText(
 
-    def _get_choice_layer(self,_widget):    
-        for j,layer in enumerate(self.viewer.layers):
-            if layer.name == _widget.currentText():
-                index_layer = j
-                break
-        print("Layer where points are is:",j)
-        return index_layer
+
     
     def _get_points(self,_widget):
         import pandas as pd
-        _index_layer = self._get_choice_layer(_widget)
+        _index_layer = _get_choice_layer(self,_widget)
         
         # self.viewer.layers[_widget.currentIndex()].data
         # if len(self.viewer.layers[_index_layer].data.shape) < 3:
@@ -649,7 +767,6 @@ class ColocalizationQWidget(QWidget):
         # b = self.viewer.layers.selection.active.properties
         # for key in b.keys():
         #     df[key] = b[key]
-        _index_layer = self._get_choice_layer(_widget)
         
         # self.viewer.layers[0].data
         if len(self.viewer.layers[0].data.shape) < 3:
@@ -663,7 +780,5 @@ class ColocalizationQWidget(QWidget):
         #error is here somehow now
         # for key in b.keys():
         #     df[key] = b[key]
-
-
     
         return df

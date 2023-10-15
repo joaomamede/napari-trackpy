@@ -10,6 +10,17 @@ _8bit = float(2**8-1)
 _16bit = float(2**16-1)
 ratio = _8bit /_16bit
 
+
+def _get_open_filename(self):
+    from napari.utils import history
+    _last_folder = history.get_open_history()[0]
+    for i in range(len(self.viewer.layers)-1,-1,-1):
+        if self.viewer.layers[i]._type_string == 'image':
+            _filename = self.viewer.layers[i].name.split(" :: ")[0]
+            _filename = _last_folder +"/"+ _filename
+            break
+    return _filename
+
 def points_in_mask(coords,mask):
     '''
     Input: 
