@@ -13,11 +13,11 @@ from qtpy.QtWidgets import QVBoxLayout, QHBoxLayout,QPushButton, QCheckBox, QCom
 from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget, QGridLayout
 from qtpy.QtWidgets import QSpacerItem, QSizePolicy, QFileDialog, QLineEdit
 from napari.qt.threading import thread_worker
-
+import numpy as np
 
 # viewer.layers[0].source.path
 
-import numpy as np
+
 # from './support_libraries' import make_labels_trackpy_links
 
 if TYPE_CHECKING:
