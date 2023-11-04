@@ -62,7 +62,7 @@ def _get_choice_layer(self,_widget):
     print("Layer where points are is:",j)
     return index_layer
     
-def make_labels_trackpy_links(shape,j,radius=5,_round=False,_algo="CPU"):
+def make_labels_trackpy_links(shape,j,radius=5,_round=False,_algo="GPU"):
     import trackpy as tp
     import scipy.ndimage as ndi
     from scipy.ndimage import binary_dilation
@@ -364,7 +364,7 @@ class IdentifyQWidget(QWidget):
             mask_temp, idx_temp = make_labels_trackpy_links(
                 self.viewer.layers[index_layer].data[i].shape,
                 # self.viewer.layers[index_layer].data[i],
-                temp,radius=(self.diameter_input.value())/2)
+                temp,radius=((self.diameter_input.value())/2)-0.5)
                 # temp,size=5-1)
         #     print(mask_temp.max(),len(temp.index))
         #     idx.append(idx_temp)
@@ -449,6 +449,7 @@ class IdentifyQWidget(QWidget):
 
         _masks = self.make_masks()
         self._masks_layer = self.viewer.add_labels(_masks)
+        self._masks_layer.scale = self.viewer.layers[index_layer].scale
 
     # @thread_worker
     def _on_click2(self):
