@@ -23,15 +23,7 @@ import numpy as np
 if TYPE_CHECKING:
     import napari
 
-def _get_open_filename(self,type='image',separator= " :: "):
-    from napari.utils import history
-    _last_folder = history.get_open_history()[0]
-    for i in range(len(self.viewer.layers)-1,-1,-1):
-        if self.viewer.layers[i]._type_string == type:
-            _filename = self.viewer.layers[i].name.split(separator)[0]
-            _filename = _last_folder +"/"+ _filename
-            break
-    return _filename
+
 
 # def open_file_dialog(self):
 #     from pathlib import Path
@@ -61,6 +53,19 @@ def _get_choice_layer(self,_widget):
             break
     print("Layer where points are is:",j)
     return index_layer
+
+def _get_open_filename(self,type='image',separator= " :: "):
+    import os
+    # from napari.utils import history
+    # _last_folder = history.get_open_history()[0]
+    # for i in range(len(self.viewer.layers)-1,-1,-1):
+    #     if self.viewer.layers[i]._type_string == type:
+    #         _filename = self.viewer.layers[i].name.split(separator)[0]
+    #         _filename = _last_folder +"/"+ _filename
+    #         break
+    j = _get_choice_layer(self,self.layersbox)
+    _filename = os.path.splitext(self.viewer.layers[j]._source.path)[0]
+    return _filename
     
 def make_labels_trackpy_links(shape,j,radius=5,_round=False,_algo="GPU"):
     import trackpy as tp
@@ -175,7 +180,7 @@ class IdentifyQWidget(QWidget):
         self.mass_slider = QSpinBox()
         self.mass_slider.setRange(0, int(1e6))
         self.mass_slider.setSingleStep(200)
-        self.mass_slider.setValue(500)
+        self.mass_slider.setValue(4000)
         l2 = QLabel()
         
         l2.setText("Diameter of the particle")
@@ -184,7 +189,6 @@ class IdentifyQWidget(QWidget):
         self.diameter_input.setSingleStep(2)
         self.diameter_input.setValue(5)
 
-        
         l3 = QLabel()
         l3.setText("Size cutoff (Select for usage)")
         self.layoutH0 = QHBoxLayout()
@@ -193,7 +197,7 @@ class IdentifyQWidget(QWidget):
         self.size_filter_input = QDoubleSpinBox()
         self.size_filter_input.setRange(0, 10)
         self.size_filter_input.setSingleStep(0.05)
-        self.size_filter_input.setValue(1.90)
+        self.size_filter_input.setValue(1.40)
         self.layoutH0.addWidget(self.size_filter_tick)
         self.layoutH0.addWidget(self.size_filter_input)
 
@@ -201,7 +205,7 @@ class IdentifyQWidget(QWidget):
         l4.setText("Eccentricity cutoff (Select for usage)")
         self.layoutH0p = QHBoxLayout()
         self.ecc_tick = QCheckBox()
-        self.ecc_tick.setChecked(True)
+        self.ecc_tick.setChecked(False)
         self.ecc_input = QDoubleSpinBox()
         self.ecc_input.setRange(0, 2)
         self.ecc_input.setSingleStep(0.05)
@@ -235,6 +239,17 @@ class IdentifyQWidget(QWidget):
         self.layoutH2.addWidget(self.max_timer)
 
 
+        label_masks = QLabel()
+        label_masks.setText("Make Masks?")
+        self.layout_masks = QHBoxLayout()
+        self.make_masks_box = QCheckBox()
+        self.make_masks_box.setChecked(False)
+        self.masks_option = QComboBox()
+        self.masks_option.addItems(["subpixel GPU","subpixel CPU","coarse CPU"])
+        self.layout_masks.addWidget(label_masks)
+        self.layout_masks.addWidget(self.make_masks_box)
+        self.layout_masks.addWidget(self.masks_option)
+
 
         btn = QPushButton("Identify Spots")
         btn.clicked.connect(self._on_click)
@@ -261,6 +276,7 @@ class IdentifyQWidget(QWidget):
         self.layout().addLayout(self.layoutH0p)
         self.layout().addLayout(self.layoutH1)
         self.layout().addLayout(self.layoutH2)
+        self.layout().addLayout(self.layout_masks)
         self.layout().addWidget(btn)
         self.layout().addWidget(self.btn2)
         # self.layout.addSpacing(10)
@@ -391,9 +407,10 @@ class IdentifyQWidget(QWidget):
             if self.choice.isChecked():
                 print("Detected a Time lapse TYX or TZYX image")
                 img = np.asarray(self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()])
+                # img = self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()]
                 self.f = tp.batch(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
                                 engine="numba",
-                                #   processes=1,
+                                  processes=1,
                                 )
                 #TODO
                 #if min is not 0 we have to adjust F to bump it up
@@ -404,6 +421,7 @@ class IdentifyQWidget(QWidget):
                 if self.viewer.layers[index_layer].scale[0] != 1:
                     print("Detected a ZYX image")
                     img = np.asarray(self.viewer.layers[index_layer].data)
+                    # img = self.viewer.layers[index_layer].data
                     self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value())
                     self.f['frame'] = 0
                 else:
@@ -411,11 +429,13 @@ class IdentifyQWidget(QWidget):
                     _time_locator = self.viewer.dims.current_step[0]
                     #here
                     img = np.asarray(self.viewer.layers[index_layer].data[_time_locator])
+                    # img = self.viewer.layers[index_layer].data[_time_locator]
                     self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value())
                     self.f['frame'] = _time_locator
         elif len(self.viewer.layers[index_layer].data.shape) == 2:
             print("Detected only YX")
             img = np.asarray(self.viewer.layers[index_layer].data)
+            # img = self.viewer.layers[index_layer].data
             self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value())
             self.f['frame'] = 0
                 #TODO
@@ -447,9 +467,10 @@ class IdentifyQWidget(QWidget):
 
         self.btn2.setEnabled(True)
 
-        _masks = self.make_masks()
-        self._masks_layer = self.viewer.add_labels(_masks)
-        self._masks_layer.scale = self.viewer.layers[index_layer].scale
+        if self.make_masks_box.isChecked():
+            _masks = self.make_masks()
+            self._masks_layer = self.viewer.add_labels(_masks)
+            self._masks_layer.scale = self.viewer.layers[index_layer].scale
 
     # @thread_worker
     def _on_click2(self):
