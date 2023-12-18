@@ -54,7 +54,7 @@ def _get_choice_layer(self,_widget):
     print("Layer where points are is:",j)
     return index_layer
 
-def _get_open_filename(self,type='image',separator= " :: "):
+def _get_open_filename(self,type='image',separator= " :: ",choice_widget=None):
     import os
     # from napari.utils import history
     # _last_folder = history.get_open_history()[0]
@@ -63,7 +63,10 @@ def _get_open_filename(self,type='image',separator= " :: "):
     #         _filename = self.viewer.layers[i].name.split(separator)[0]
     #         _filename = _last_folder +"/"+ _filename
     #         break
-    j = _get_choice_layer(self,self.layersbox)
+    try:
+        j = _get_choice_layer(self,self.layersbox)
+    except:
+        j = 0
     _filename = os.path.splitext(self.viewer.layers[j]._source.path)[0]
     return _filename
     
@@ -509,7 +512,8 @@ class IdentifyQWidget(QWidget):
         import pandas as pd
         ##TODO
         ##pull from points layer see example below
-        selected_layer = self.viewer.layers.selection
+        selected_layer = _get_choice_layer(self,self.layersbox)
+        # selected_layer = self.viewer.layers.selection
         if len(self.viewer.layers[selected_layer].data.shape) <= 3:
             #manbearpig time lapse vs Zstack
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
