@@ -761,9 +761,9 @@ class ColocalizationQWidget(QWidget):
         from sklearn.neighbors import KDTree
         print("Doing Colocalization")
         QuestionPOS = self._get_points(self.points_question)
-        print(QuestionPOS)
+        #print(QuestionPOS)
         AnchorPOS = self._get_points(self.points_anchor)
-        print(AnchorPOS)
+        #print(AnchorPOS)
 
         #scipy way
         # question_kd = scipy.spatial.cKDTree(QuestionPOS,
@@ -849,10 +849,10 @@ class ColocalizationQWidget(QWidget):
         #     df[key] = b[key]
         
         # self.viewer.layers[0].data
-        if len(self.viewer.layers[0].data.shape) < 3:
+        if len(self.viewer.layers[0].data.shape) <= 3:
             df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
             print("2D",df)
-        elif len(self.viewer.layers[0].data.shape) >= 3:
+        elif len(self.viewer.layers[0].data.shape) > 3:
             df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x'])
             print("3D",df)
 
