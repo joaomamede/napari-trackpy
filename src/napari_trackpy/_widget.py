@@ -416,7 +416,7 @@ class IdentifyQWidget(QWidget):
                 # img = self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()]
                 self.f = tp.batch(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
                                 engine="numba",
-                                  processes=1,
+                                processes=1,
                                 )
                 #TODO
                 #if min is not 0 we have to adjust F to bump it up
