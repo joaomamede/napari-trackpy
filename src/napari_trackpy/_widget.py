@@ -168,8 +168,11 @@ class IdentifyQWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
-        self.points_options = dict(face_color=[0]*4,edge_color='red',opacity=0.5,size=5,blending='additive')
-        self.points_options2 = dict(face_color=[0]*4,edge_color='green',opacity=0.5,size=5,blending='additive')
+        
+        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=6,blending='additive',edge_width=0.15)
+        # edge_color='red'
+        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=6,blending='additive',edge_width=0.15)
+        # ,edge_color='green'
         #comboBox for layer selection
         self.llayer = QLabel()
         self.llayer.setText("Layer to detect")
@@ -465,7 +468,19 @@ class IdentifyQWidget(QWidget):
             _points = self.f.loc[:,['frame','z','y','x']]
         _metadata = self.f.loc[:,['mass','size','ecc']]
 
-        self._points_layer = self.viewer.add_points(_points,properties=_metadata,**self.points_options)
+        #self.viewer.layers[index_layer]
+        # self.viewer.layers[index_layer].colormap.name)
+        #like this is opposite color of the image
+        #make if smarter self.viewer.layers[index_layer].colormap.color has an array with the colors, we should be able to flip universaly 
+        clr_name = self.viewer.layers[index_layer].colormap.name
+        if clr_name == 'green':
+            point_colors = 'magenta'
+        elif clr_name == 'red':
+            point_colors = 'cyan'
+        elif clr_name == 'blue':
+            point_colors = 'yellow'
+
+        self._points_layer = self.viewer.add_points(_points,properties=_metadata,**self.points_options,edge_color=point_colors)
         self._points_layer.scale = self.viewer.layers[index_layer].scale
 
         self.btn2.setEnabled(True)
@@ -805,7 +820,7 @@ class ColocalizationQWidget(QWidget):
                     len(_colocalizing)/len(AnchorPOS)))
         self.layout().addWidget(l_coloc)
         _colocalizing_points = AnchorPOS[distances_list < self.euc_distance.value()]
-        coloc_points = self.viewer.add_points(_colocalizing_points)
+        coloc_points = self.viewer.add_points(_colocalizing_points, opacity=0.31)
         coloc_points.scale = self.viewer.layers[0].scale
 
         self._colocalizing_points = _colocalizing_points
