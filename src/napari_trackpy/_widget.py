@@ -292,11 +292,17 @@ class IdentifyQWidget(QWidget):
         file_browse.clicked.connect(self.open_file_dialog)
         # file_browse.clicked.connect(open_file_dialog,self)
         self.filename_edit = QLineEdit()
-        self.filename_edit.setText(_get_open_filename(self)+"_Spots.csv")
+        # try:
+        #     self.filename_edit.setText(_get_open_filename(self)+"_Spots.csv")
+        # except:
+        self.filename_edit.setText("Spots.csv")
+        self.auto_save = QCheckBox()
+        self.auto_save.setChecked(True)
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
         grid_layout.addWidget(self.filename_edit, 0, 1)
         grid_layout.addWidget(file_browse, 0 ,2)
+        grid_layout.addWidget(self.auto_save, 0 ,3)
         self.layout().addLayout(grid_layout)
         self.layout().addWidget(save_btn)
 
@@ -307,6 +313,35 @@ class IdentifyQWidget(QWidget):
         self.viewer.layers.events.reordered.connect(self._refresh_layers)
 
         # self._connect_layer()
+        ###Run Batch Idea
+
+        ### for every channel create a 
+        # for 
+        self.batch_grid_layout = QGridLayout()
+        for k in range(self.layersbox.count()):
+            
+            batch_mass_slider = QSpinBox()
+            batch_mass_slider.setRange(0, int(1e6))
+            batch_mass_slider.setSingleStep(200)
+            batch_mass_slider.setValue(4000)
+            
+            batch_check_box = QCheckBox()
+            batch_check_box.setChecked(True)
+
+            self.batch_grid_layout.addWidget(QLabel(self.layersbox.itemText(k)), k, 0)
+            self.batch_grid_layout.addWidget(batch_mass_slider, k, 1)
+            self.batch_grid_layout.addWidget(batch_check_box, k ,2)
+
+        # QDoubleSpinBox()
+        # QCheckBox()
+        #Then for all the checked items
+            #update mass to match the layer to analyse
+            #Create a QPushButton
+        _batch_btn = QPushButton('Run in All Channels Selected')
+        _batch_btn.clicked.connect(self.batch_on_click)
+
+        self.layout().addLayout(self.batch_grid_layout)
+        self.layout().addWidget(_batch_btn)
 
     def open_file_dialog(self):
         from pathlib import Path
@@ -405,6 +440,16 @@ class IdentifyQWidget(QWidget):
     # @thread_worker
     def _on_click(self):
         index_layer = _get_choice_layer(self,self.layersbox)
+        self.viewer.layers[index_layer].name
+        ##this only works for napari-bioformats
+        # if self.filename_edit.text() == "Spots.csv":
+        name_points = self.viewer.layers[index_layer].name.split(":")[0]
+        self.filename_edit.setText(_get_open_filename(
+                self)+'_'+name_points+"_Spots.csv")
+        # else:
+        #     temp_path = self.filename_edit.txt()
+        #     self.filename_edit.setText(temp_path.strip_get_open_filename(
+        #             self)+'_'+self.viewer.layers[index_layer].name+"_Spots_.csv")
         print("Detecting points on layer:",index_layer)
         #if its time or Z
         #locating steps
@@ -480,7 +525,7 @@ class IdentifyQWidget(QWidget):
         elif clr_name == 'blue':
             point_colors = 'yellow'
 
-        self._points_layer = self.viewer.add_points(_points,properties=_metadata,**self.points_options,edge_color=point_colors)
+        self._points_layer = self.viewer.add_points(_points,name="Points "+name_points,properties=_metadata,**self.points_options,edge_color=point_colors)
         self._points_layer.scale = self.viewer.layers[index_layer].scale
 
         self.btn2.setEnabled(True)
@@ -489,6 +534,27 @@ class IdentifyQWidget(QWidget):
             _masks = self.make_masks()
             self._masks_layer = self.viewer.add_labels(_masks)
             self._masks_layer.scale = self.viewer.layers[index_layer].scale
+
+        if self.auto_save.isChecked():
+            self._save_results()
+
+    def batch_on_click(self):
+        print(self.batch_grid_layout.count())
+        
+        for i in range(self.layersbox.count()):
+        #if index is checked, get the check from the grid self:
+            if self.batch_grid_layout.itemAt(i*3+2).widget().isChecked():
+                #update selection to match
+                self.layersbox.setCurrentIndex(i)
+                #update mass value get the value from grid
+                self.mass_slider.setValue(
+                    #no idea how to do this
+                    #example
+                    self.batch_grid_layout.itemAt(i*3+1).widget().value()
+                                          )
+                self._on_click()
+            
+
 
     # @thread_worker
     def _on_click2(self):
@@ -708,17 +774,21 @@ class ColocalizationQWidget(QWidget):
         ##another label for translation to uM
         run_btn = QPushButton("Run Colocalization")
         run_btn.clicked.connect(self.calculate_colocalizing)
+        run_all_btn = QPushButton("Run All Combinations to Anchor")
+        run_all_btn.clicked.connect(self.calculate_all_colocalizing)
 
         file_browse = QPushButton('Browse')
         file_browse.clicked.connect(self.open_file_dialog)
         self.filename_edit = QLineEdit()
-        self.filename_edit.setText(_get_open_filename(self)+"_Spots_Coloc.csv")
+        # self.filename_edit.setText(_get_open_filename(self)+"_Spots_Coloc.csv")
+        self.filename_edit.setText("Spots_Coloc.csv")
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
         grid_layout.addWidget(self.filename_edit, 0, 1)
         grid_layout.addWidget(file_browse, 0 ,2)
-
-
+        self.auto_save = QCheckBox()
+        self.auto_save.setChecked(True)
+        grid_layout.addWidget(self.auto_save, 0 ,3)
 
 
         save_btn = QPushButton("Save current Spots")
@@ -733,28 +803,37 @@ class ColocalizationQWidget(QWidget):
         self.layout().addWidget(self.points_question)
         self.layout().addLayout(self.layoutH0)
         self.layout().addWidget(run_btn)
+        self.layout().addWidget(run_all_btn)
         self.layout().addLayout(grid_layout)
         self.layout().addWidget(save_btn)
+
+        import pyqtgraph as pg
+        self._plt = pg.plot()
+        self.layout().addWidget(self._plt)
 
     def _save_results(self):
         import pandas as pd
         ##TODO
         ##pull from points layer see example below
-        if self.viewer.layers.selection.type == "points":
-            idx = self.viewer.layers.selection
-            _get_points(self)
+        if self.viewer.layers.selection.active._type_string == 'points':
+            _index_layer = self.viewer.layers.selection.active
+            # df = _get_points(self)
              #manbearpig   
         # self.viewer.layers[0].data
-            if len(self.viewer.layers[0].data.shape) < 3:
-                df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
+        #need to make this smarter, if the layers are shuffled it breaks.
+            if len(_index_layer.data.shape) < 3:
+                df = pd.DataFrame(_index_layer.data, columns = ['frame','y','x'])
                 print("2D",df)
-            elif len(self.viewer.layers[0].data.shape) >= 3:
-                df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x'])
+            elif len(_index_layerdata.shape) >= 3:
+                df = pd.DataFrame(_index_layer.data, columns = ['frame','z','y','x'])
                 print("3D",df)
 
-            b = self.viewer.layers.selection.active.properties
+            # b = self.viewer.layers.selection.active.properties
+# self.filename_edit
+            _save_name = self.viewer.layers.selection.active.name
+            df.to_csv(self.filename_edit.text().strip(".csv")+"_"+_save_name+".csv")
 
-            df.to_csv(self.filename_edit.text().strip(".csv")+i+".csv")
+
 
     def open_file_dialog(self):
         from pathlib import Path
@@ -769,10 +848,11 @@ class ColocalizationQWidget(QWidget):
             path = Path(filename)
             self.filename_edit.setText(str(path))
     
+
     def calculate_colocalizing(self):
         #makecode from notebooks
         import scipy
-        import pyqtgraph as pg
+
         from sklearn.neighbors import KDTree
         print("Doing Colocalization")
         QuestionPOS = self._get_points(self.points_question)
@@ -794,38 +874,76 @@ class ColocalizationQWidget(QWidget):
         tree = KDTree(QuestionPOS, leaf_size=1)
         distances_list = tree.query(AnchorPOS)[0]
         
-        self._plt = pg.plot()
-        self.layout().addWidget(self._plt)
+
         _hist,_bins = np.histogram(distances_list,bins=100)
         # _plt.showGrid(x=True, y=True)()
         print(distances_list,_bins,_hist)
         line1 = self._plt.plot(
             _bins[:-1],_hist,
-            #   distances_list, pen='g', symbol='x', symbolPen='g',
-            #   symbolBrush=0.2, name='green'
+            #   distances_list, 
+            pen='g',
+            #   symbol='x', symbolPen='g',
+            #   symbolBrush=0.2, 
+            name='green'
             )
  
-        # _plt.setImage(distances_list
+        # self._plt.setImage(distances_list
         #               , xvals=np.linspace(0., 100., distances_list.shape[0]))
         _colocalizing = distances_list[distances_list < self.euc_distance.value()]
         #
-        # print(tree.query_radius(AnchorPOS, r=self.euc_distance.value(), count_only=True))
-        # ind = tree.query_radius(AnchorPOS, r=self.euc_distance.value()) 
+        print(tree.query_radius(AnchorPOS, r=self.euc_distance.value(), count_only=True))
+        ind = tree.query_radius(AnchorPOS, r=self.euc_distance.value()) 
 
         
-        print(len(_colocalizing))
-        l_coloc = QLabel("Number of colocalizing"+" "+str(
+        _colocalizing_points = AnchorPOS[distances_list < self.euc_distance.value()]
+        coloc_name = "Coloc_"+self.points_question.currentText()+'_in_'+self.points_anchor.currentText()
+        coloc_points = self.viewer.add_points(_colocalizing_points, opacity=0.31,
+                                              name=coloc_name)
+        coloc_points.scale = self.viewer.layers[0].scale
+        
+        l_coloc = QLabel("Number of colocalizing in "+coloc_name+":"+str(
+            len(AnchorPOS))+" "+str(
             len(_colocalizing))+" "+str(
-                len(AnchorPOS))+" "+str(
                     len(_colocalizing)/len(AnchorPOS)))
         self.layout().addWidget(l_coloc)
-        _colocalizing_points = AnchorPOS[distances_list < self.euc_distance.value()]
-        coloc_points = self.viewer.add_points(_colocalizing_points, opacity=0.31)
-        coloc_points.scale = self.viewer.layers[0].scale
+
 
         self._colocalizing_points = _colocalizing_points
+        if self.auto_save.isChecked():
+            self.filename_edit.setText(_get_open_filename(
+                    self)+'_'+coloc_name+"_Spots.csv")
+            self._save_results()
 
+    def calculate_all_colocalizing(self):
+        idx_anchor = self.points_anchor.currentIndex()
+        _num_items = self.points_question.count()
+        self.points_question.setCurrentIndex(0)
+        for i in range(_num_items):
+            if self.points_question.currentIndex() == idx_anchor:
+                if self.points_question.currentIndex() < _num_items-1:
+                    self.points_question.setCurrentIndex(
+                        self.points_question.currentIndex()+1)
+            else:
+                self.calculate_colocalizing()
+                if self.points_question.currentIndex() < _num_items-1:
+                    self.points_question.setCurrentIndex(
+                        self.points_question.currentIndex()+1)
 
+        #fortripple coloc
+        #if the anchor is the last item, it will not work because it will compare to itself.
+        #fix ASAP
+        if _num_items == 3:
+        #then set anchor to the first result (anchor plus first available) 
+            #0 index so +1 is not needed
+            self.points_anchor.setCurrentIndex(_num_items)
+            if self.points_question.currentIndex() == idx_anchor:
+                self.points_question.setCurrentIndex(
+                    self.points_question.currentIndex()-1)
+        # and compare to the other that was not anchor in the beggining
+            #normally the points_question was already in the last
+            #point_list that is not the anchor, so it should be ready to go
+            self.calculate_colocalizing()
+    
     def _refresh_layers(self):
         i = self.points_anchor.currentIndex()
         self.points_anchor.clear()
