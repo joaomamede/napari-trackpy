@@ -18,7 +18,7 @@ import numpy as np
 # viewer.layers[0].source.path
 
 
-# from './support_libraries' import make_labels_trackpy_links
+# from support_libraries import make_labels_trackpy_links
 
 if TYPE_CHECKING:
     import napari
@@ -70,39 +70,144 @@ def _get_open_filename(self,type='image',separator= " :: ",choice_widget=None):
     _filename = os.path.splitext(self.viewer.layers[j]._source.path)[0]
     return _filename
     
+# def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
+#     import trackpy as tp
+#     import scipy.ndimage as ndi
+#     from scipy.ndimage import binary_dilation
+
+#     if _algo == "GPU":
+#         import cupy as cp
+
+#         #outputsomehow is 3D, we want 2
+#         # pos = cp.dstack((round(j.y),round(j.x)))[0].astype(int)
+#         # if j.z:
+#         if 'z' in j:
+#             # "Need to loop each t and do one at a time"
+#             pos = cp.dstack((j.z,j.y,j.x))[0]#.astype(int)
+#             print("3D",j)
+#         else:
+#             pos = cp.dstack((j.y,j.x))[0]#.astype(int)
+#             print("2D",j)
+
+
+#         ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
+#         ndim = len(shape)
+#         # radius = validate_tuple(radius, ndim)
+#         pos = cp.atleast_2d(pos)
+
+#         # if include_edge:
+#         in_mask = cp.array([cp.sum(((cp.indices(shape).T - p) / radius)**2, -1) <= 1
+#                     for p in pos])
+#         # else:
+#         #     in_mask = [np.sum(((np.indices(shape).T - p) / radius)**2, -1) < 1
+#         #                for p in pos]
+#         mask_total = cp.any(in_mask, axis=0).T
+
+#         ##if they overlap the labels won't match the points
+#         #we can make np.ones * ID of the point and then np.max(axis=-1)
+#         labels, nb = ndi.label(cp.asnumpy(mask_total))
+#         # image * mask_cluster.astype(np.uint8)
+        
+#         #this is super slow
+#         # ~ masks = tp.masks.mask_image(coords,np.ones(image.shape),size/2)
+#     elif _algo=='CPU':
+#         if 'z' in j:
+#             # "Need to loop each t and do one at a time"
+#             pos = np.dstack((j.z,j.y,j.x))[0]#.astype(int)
+#             print("3D",j)
+#         else:
+#             pos = np.dstack((j.y,j.x))[0]#.astype(int)
+#             print("2D",j)
+
+#         ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
+#         ndim = len(shape)
+#         # radius = validate_tuple(radius, ndim)
+#         pos = np.atleast_2d(pos)
+#         # if include_edge:
+#         in_mask = np.array([np.sum(((np.indices(shape).T - p) / radius)**2, -1) <= 1
+#                     for p in pos])
+#         # else:
+#         #     in_mask = [np.sum(((np.indices(shape).T - p) / radius)**2, -1) < 1
+#         #                for p in pos]
+#         mask_total = np.any(in_mask, axis=0).T
+#         ##if they overlap the labels won't match the points
+#         #we can make np.ones * ID of the point and then np.max(axis=-1)
+#         labels, nb = ndi.label(mask_total)
+#     elif _algo=='fast':
+#     #This is faster
+        
+#         # r = (radius-1)/2 # Radius of circles
+#         # print(radius,r)
+#     #     #make 3D compat
+#         disk_mask = tp.masks.binary_mask(radius,len(shape))
+#         # print(disk_mask)
+#     #     # Initialize output array and set the maskcenters as 1s
+#         out = np.zeros(shape,dtype=bool)
+
+#         if 'z' in j:
+#             pos = np.dstack((j.z,j.y,j.x))[0].astype(int)
+#             pos = np.atleast_2d(pos)
+#             print(pos)
+#             out[pos[:,0],pos[:,1],pos[:,2]] = 1            
+
+#         else:
+#             pos = np.dstack((j.y,j.x))[0].astype(int)
+#             pos = np.atleast_2d(pos)
+#             print(pos)
+#             out[pos[:,0],pos[:,1]] = 1
+#     #     # Use binary dilation to get the desired output
+    
+#         out = binary_dilation(out,disk_mask)
+
+#         labels, nb = ndi.label(out)
+#         print("Number of labels:",nb)
+#         # if _round:
+#         #     return labels, coords
+#         # else:
+#         #     if image.ndim == 2:
+#         #         # coords = j.loc[:,['particle','frame','y','x']]
+#         #         coords = j.loc[:,['frame','y','x']]
+#         #         # coords = np.dstack((j.particle,j.y,j.x))[0]
+#         #         return labels, coords
+#     return labels, pos
 def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
+    """
+    Creates binary masks around given positions with a specified radius in a 3D space using PyOpenCL.
+
+    :param shape: Tuple of the output volume shape (Z, Y, X).
+    :param positions: NumPy array of positions (Z, Y, X).
+    :param radius: The radius around each position to fill in the mask.
+    :return: A 3D NumPy array representing the labeled masks. The positions as array
+    """
     import trackpy as tp
     import scipy.ndimage as ndi
     from scipy.ndimage import binary_dilation
-
+    
+    if 'z' in j:
+        # "Need to loop each t and do one at a time"
+        pos = np.dstack((j.z,j.y,j.x))[0]#.astype(int)
+        print("3D",j)
+    else:
+        pos = np.dstack((j.y,j.x))[0]#.astype(int)
+        print("2D",j)
+        
     if _algo == "GPU":
         import cupy as cp
-
-        #outputsomehow is 3D, we want 2
-        # pos = cp.dstack((round(j.y),round(j.x)))[0].astype(int)
-        # if j.z:
-        if 'z' in j:
-            # "Need to loop each t and do one at a time"
-            pos = cp.dstack((j.z,j.y,j.x))[0]#.astype(int)
-            print("3D",j)
-        else:
-            pos = cp.dstack((j.y,j.x))[0]#.astype(int)
-            print("2D",j)
-
+        pos_cp = cp.asarray(pos)
 
         ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
         ndim = len(shape)
         # radius = validate_tuple(radius, ndim)
-        pos = cp.atleast_2d(pos)
+        pos_cp = cp.atleast_2d(pos_cp)
 
         # if include_edge:
         in_mask = cp.array([cp.sum(((cp.indices(shape).T - p) / radius)**2, -1) <= 1
-                    for p in pos])
+                    for p in pos_cp])
         # else:
         #     in_mask = [np.sum(((np.indices(shape).T - p) / radius)**2, -1) < 1
         #                for p in pos]
         mask_total = cp.any(in_mask, axis=0).T
-
+        
         ##if they overlap the labels won't match the points
         #we can make np.ones * ID of the point and then np.max(axis=-1)
         labels, nb = ndi.label(cp.asnumpy(mask_total))
@@ -111,13 +216,7 @@ def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
         #this is super slow
         # ~ masks = tp.masks.mask_image(coords,np.ones(image.shape),size/2)
     elif _algo=='CPU':
-        if 'z' in j:
-            # "Need to loop each t and do one at a time"
-            pos = np.dstack((j.z,j.y,j.x))[0]#.astype(int)
-            print("3D",j)
-        else:
-            pos = np.dstack((j.y,j.x))[0]#.astype(int)
-            print("2D",j)
+
 
         ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
         ndim = len(shape)
@@ -169,56 +268,87 @@ def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
         #         coords = j.loc[:,['frame','y','x']]
         #         # coords = np.dstack((j.particle,j.y,j.x))[0]
         #         return labels, coords
-    # elif _algo == 'openCL':
-        # def opencl_function(ctx, queue, shape, pos, radius, include_edge=True):
-            # ndim = len(shape)
+    elif _algo == 'openCL':
+        print("Using openCL function")
+        import pyopencl as cl
+            # Prepare data
+        mask = np.zeros(shape, dtype=np.uint8)
+        positions_flat = pos.flatten().astype(np.float32)
+        radius = np.float32(radius)
+        
+        platform = cl.get_platforms()
+        my_gpu_devices = platform[0].get_devices(device_type=cl.device_type.GPU)
+        ctx = cl.Context(devices=my_gpu_devices)
 
-            # # Flatten the shape to a single value for the buffer
-            # shape_flat = np.prod(shape)
+        # PyOpenCL setup
+    #     ctx = cl.create_some_context()
+        queue = cl.CommandQueue(ctx)
+        mf = cl.mem_flags
 
-            # # Set up OpenCL buffers
-            # shape_buf = cl.Buffer(ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=shape)
-            # pos_buf = cl.Buffer(ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=pos)
-            # radius_buf = cl.Buffer(ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=radius)
-
-            # # Create an OpenCL buffer for the result
-            # result = np.empty((pos.shape[0],) + shape, dtype=np.bool)
-            # result_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result.nbytes)
-
-            # # Write OpenCL kernel
-            # kernel_code = """
-            #     __kernel void mask_kernel(const int ndim,
-            #                             const int shape_flat,
-            #                             __global const int* shape,
-            #                             __global const float* pos,
-            #                             __global const float* radius,
-            #                             const int include_edge,
-            #                             __global int* result) {
-            #         int gid = get_global_id(0);
-            #         int pid = get_global_id(1);
-
-            #         float distance_squared = 0.0;
-
-            #         for (int d = 0; d < ndim; ++d) {
-            #             float diff = (get_global_size(1) > 1) ? (pos[pid * ndim + d] - gid % shape[d]) : 0.0;
-            #             distance_squared += diff * diff;
-            #         }
-
-            #         result[pid * shape_flat + gid] = ((distance_squared / (radius[pid] * radius[pid])) <= 1.0) ? 1 : 0;
-            #     }
-            # """
-
-            # # Build the program
-            # program = cl.Program(ctx, kernel_code).build()
-
-            # # Execute kernel
-            # program.mask_kernel(queue, result.shape, None, np.int32(ndim), np.int32(shape_flat), shape_buf, pos_buf, radius_buf, np.int32(include_edge), result_buf)
-
-            # # Retrieve results
-            # cl.enqueue_copy(queue, result, result_buf).wait()
-
-            # return result
+        # Create buffers
+        mask_buf = cl.Buffer(ctx, mf.WRITE_ONLY | mf.COPY_HOST_PTR, hostbuf=mask)
+        positions_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=positions_flat)
+        
+        # Kernel code
+        if 'z' in j:
+            kernel_code = """
+            __kernel void fill_mask(__global uchar *mask, __global const float *positions, const float radius, const int num_positions) {
+                int x = get_global_id(0);
+                int y = get_global_id(1);
+                int z = get_global_id(2);
+                int width = get_global_size(0);
+                int height = get_global_size(1);
+                int depth = get_global_size(2);
+                int idx = x + y * width + z * width * height;
+                
+                for (int i = 0; i < num_positions; ++i) {
+                    float pz = positions[i * 3];
+                    float py = positions[i * 3 + 1];
+                    float px = positions[i * 3 + 2];
+                    
+                    float distance = sqrt(pow(px - x, 2) + pow(py - y, 2) + pow(pz - z, 2));
+                    if (distance <= radius) {
+                        mask[idx] = 1;
+                        break;
+                    }
+                }
+            }
+            """
+        else:
+            kernel_code = """
+            __kernel void fill_mask(__global uchar *mask, __global const float *positions, const float radius, const int num_positions) {
+                int x = get_global_id(0);
+                int y = get_global_id(1);
+                int width = get_global_size(0);
+                int height = get_global_size(1);
+                int idx = x + y * width;
+                
+                for (int i = 0; i < num_positions; ++i) {
+                    float py = positions[i * 2];
+                    float px = positions[i * 2 + 1];
+                    
+                    float distance = sqrt(pow(px - x, 2) + pow(py - y, 2));
+                    if (distance <= radius) {
+                        mask[idx] = 1;
+                        break;
+                    }
+                }
+            }
+            """
+        # Build kernel
+        prg = cl.Program(ctx, kernel_code).build()
+        
+        # Execute kernel
+        global_size = shape[::-1]  # Note: PyOpenCL uses column-major order, so we reverse the dimensions
+        prg.fill_mask(queue, global_size, None, mask_buf, positions_buf, radius, np.int32(len(pos)))
+        
+        # Read back the results
+        cl.enqueue_copy(queue, mask, mask_buf)
+        labels, nb = ndi.label(mask)
+        print("End of openCL function")
     return labels, pos
+
+
 
 class IdentifyQWidget(QWidget):
     # your QWidget.__init__ can optionally request the napari viewer instance
@@ -230,9 +360,9 @@ class IdentifyQWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         
-        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=6,blending='additive',edge_width=0.15)
+        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=10,blending='additive',edge_width=0.15)
         # edge_color='red'
-        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=6,blending='additive',edge_width=0.15)
+        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=10,blending='additive',edge_width=0.15)
         # ,edge_color='green'
         #comboBox for layer selection
         self.llayer = QLabel()
@@ -312,11 +442,11 @@ class IdentifyQWidget(QWidget):
         self.make_masks_box = QCheckBox()
         self.make_masks_box.setChecked(False)
         self.masks_option = QComboBox()
-        self.masks_option.addItems(["subpixel GPU","subpixel CPU","coarse CPU"])
+        self.masks_option.addItems(["openCL","subpixel GPU","subpixel CPU","coarse CPU",])
         self.layout_masks.addWidget(label_masks)
         self.layout_masks.addWidget(self.make_masks_box)
         self.layout_masks.addWidget(self.masks_option)
-        self.masks_dict = {0:'GPU',1:'CPU',2:'fast'}
+        self.masks_dict = {0:'openCL',1:'GPU',2:'CPU',3:'fast',}
 
         btn = QPushButton("Identify Spots")
         btn.clicked.connect(self._on_click)
@@ -454,7 +584,7 @@ class IdentifyQWidget(QWidget):
         
     
     def make_masks(self):
-        import pandas as pd\
+        import pandas as pd
         # if self.viewer.layers[index_layer].scale[0] != 1:
         index_layer = _get_choice_layer(self,self.layersbox)
 
@@ -522,12 +652,31 @@ class IdentifyQWidget(QWidget):
             print("Detected more than 3 dimensions")
             if self.choice.isChecked():
                 print("Detected a Time lapse TYX or TZYX image")
+                ##This is doing okay with TZYX but if TYX it detects all spots if T is a Z.
                 # img = np.asarray(self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()])
                 img = self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()]
-                self.f = tp.batch(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
-                                engine="numba",
-                                processes=1,
-                                )
+
+                #Depending on the version of trackpy if somehow does the batch, but assigns all frame values to 0.
+                #this is to avoid this problem once you understand what happens wrong remove the first if and keep
+                #the elif portion
+                if len(img.shape) == 3:
+                    import pandas as pd
+                    local_f = pd.DataFrame()
+                    for j in range(img.shape[0]):
+                        temp_f = tp.locate(img[j],self.diameter_input.value(),minmass=self.mass_slider.value(),
+                                           engine="numba"
+                                           )
+                        print(temp_f)
+                        temp_f['frame'] = j
+                        local_f = pd.concat([local_f,temp_f])
+                    self.f = local_f
+                elif len(img.shape) == 4:
+                    print('Before batch:',img.shape)
+                    self.f = tp.batch(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
+                                    engine="numba",
+                                    processes=1,
+                                    )                    
+
                 #TODO
                 #if min is not 0 we have to adjust F to bump it up
             else:
