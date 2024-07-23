@@ -170,6 +170,31 @@ def _get_open_filename(self,type='image',separator= " :: ",choice_widget=None):
 #         #         # coords = np.dstack((j.particle,j.y,j.x))[0]
 #         #         return labels, coords
 #     return labels, pos
+
+##Numba doesn't work for 2D yet.
+from numba import jit, prange
+@jit(nopython=True, parallel=True)
+def fill_mask_numba(mask, positions, radius):
+    shape = mask.shape
+    for i in prange(len(positions)):
+        pz, py, px = positions[i]
+        for x in range(shape[2]):
+            for y in range(shape[1]):
+                for z in range(shape[0]):
+                    distance = np.sqrt((px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2)
+                    if distance <= radius:
+                        mask[z, y, x] = 1
+
+def fill_mask_cupy(mask, positions, radius):
+    import cupy as cp
+    shape = mask.shape
+    for i in range(len(positions)):
+        pz, py, px = positions[i]
+        x, y, z = cp.meshgrid(cp.arange(shape[2]), cp.arange(shape[1]), cp.arange(shape[0]))
+        distance = cp.sqrt((px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2)
+        mask[distance <= radius] = 1
+        
+        
 def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
     """
     Creates binary masks around given positions with a specified radius in a 3D space using PyOpenCL.
@@ -184,15 +209,16 @@ def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
     from scipy.ndimage import binary_dilation
     
     if 'z' in j:
-        # "Need to loop each t and do one at a time"
+    # "Need to loop each t and do one at a time"
         pos = np.dstack((j.z,j.y,j.x))[0]#.astype(int)
         print("3D",j)
     else:
         pos = np.dstack((j.y,j.x))[0]#.astype(int)
         print("2D",j)
-        
+    
     if _algo == "GPU":
         import cupy as cp
+        
         pos_cp = cp.asarray(pos)
 
         ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
@@ -268,9 +294,21 @@ def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
         #         coords = j.loc[:,['frame','y','x']]
         #         # coords = np.dstack((j.particle,j.y,j.x))[0]
         #         return labels, coords
+    elif _algo == 'numba': 
+   
+        # Prepare data
+        mask = np.zeros(shape, dtype=np.uint8)
+        
+        # Fill mask using Numba
+        fill_mask_numba(mask, pos, radius)
+        
+        # Use label function from scipy to identify connected components
+        labels, _ = ndi.label(mask)
+
     elif _algo == 'openCL':
         print("Using openCL function")
         import pyopencl as cl
+
             # Prepare data
         mask = np.zeros(shape, dtype=np.uint8)
         positions_flat = pos.flatten().astype(np.float32)
@@ -360,9 +398,9 @@ class IdentifyQWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         
-        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=10,blending='additive',edge_width=0.15)
+        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',edge_width=0.15)
         # edge_color='red'
-        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=10,blending='additive',edge_width=0.15)
+        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',edge_width=0.15)
         # ,edge_color='green'
         #comboBox for layer selection
         self.llayer = QLabel()
@@ -442,11 +480,11 @@ class IdentifyQWidget(QWidget):
         self.make_masks_box = QCheckBox()
         self.make_masks_box.setChecked(False)
         self.masks_option = QComboBox()
-        self.masks_option.addItems(["openCL","subpixel GPU","subpixel CPU","coarse CPU",])
+        self.masks_option.addItems(["openCL","numba","subpixel GPU Cupy","subpixel CPU Numpy","coarse CPU",])
         self.layout_masks.addWidget(label_masks)
         self.layout_masks.addWidget(self.make_masks_box)
         self.layout_masks.addWidget(self.masks_option)
-        self.masks_dict = {0:'openCL',1:'GPU',2:'CPU',3:'fast',}
+        self.masks_dict = {0:'openCL',1:'numba',2:'GPU',3:'CPU',4:'fast',}
 
         btn = QPushButton("Identify Spots")
         btn.clicked.connect(self._on_click)
@@ -533,6 +571,9 @@ class IdentifyQWidget(QWidget):
 
         self.layout().addLayout(self.batch_grid_layout)
         self.layout().addWidget(_batch_btn)
+        
+        
+
 
     def open_file_dialog(self):
         from pathlib import Path
@@ -611,8 +652,11 @@ class IdentifyQWidget(QWidget):
             #0 returns mask, 1 index returns coords
             self.masks_dict[self.masks_option.currentIndex()]
             print("Doing Masks with option:",self.masks_option.currentIndex(), self.masks_dict[self.masks_option.currentIndex()])
+            if self.viewer.layers[index_layer].scale[0] == 1:
+                input_shape = self.viewer.layers[index_layer].data[i].shape
+            else: input_shape = self.viewer.layers[index_layer].data.shape
             mask_temp, idx_temp = make_labels_trackpy_links(
-                self.viewer.layers[index_layer].data[i].shape,
+                input_shape,
                 # self.viewer.layers[index_layer].data[i],
                 temp,radius=((self.diameter_input.value())/2)-0.5,
                 # _round=False,
@@ -628,7 +672,9 @@ class IdentifyQWidget(QWidget):
             #         # mask_fixed[mask_temp == j] = temp.iloc[j-1]['particle'].astype('int')
             #         mask_fixed[mask_temp == j] = temp.iloc[j-1][:].astype('int')
         #     print(np.unique(mask_fixed),temp['particle'].unique())
-            masks[i,...] = mask_fixed
+            if self.viewer.layers[index_layer].scale[0] == 1:
+                masks[i,...] = mask_fixed
+            else: masks = mask_fixed
 
         return masks
     
@@ -638,7 +684,8 @@ class IdentifyQWidget(QWidget):
         self.viewer.layers[index_layer].name
         ##this only works for napari-bioformats
         # if self.filename_edit.text() == "Spots.csv":
-        name_points = self.viewer.layers[index_layer].name.split(":")[0]
+        # name_points = self.viewer.layers[index_layer].name.split(":")[0]
+        name_points = self.viewer.layers[index_layer].name.split("::")[1]
         self.filename_edit.setText(_get_open_filename(
                 self)+'_'+name_points+"_Spots.csv")
         # else:
@@ -651,6 +698,31 @@ class IdentifyQWidget(QWidget):
         if len(self.viewer.layers[index_layer].data.shape) >= 3:
             print("Detected more than 3 dimensions")
             if self.choice.isChecked():
+                import pandas as pd
+                import trackpy as tp
+                
+                def multi_locate(i,_img,_diam,_minmass):
+                    import trackpy as tp
+                    import pandas as pd
+                    import dask
+                    print("Started Frame: ",i)
+                    try:
+                        _img = _img.compute()
+                    except Exception as error:
+                        print("An exception occurred:", error)
+                        
+                    temp_f = tp.locate(_img,_diam,minmass=_minmass,
+                                    engine="numba"
+                                    )
+                    print("Done Frame: ",i)
+                    temp_f['frame'] = i
+                    
+                    return temp_f
+                
+                
+                # from multiprocessing import Pool
+                # import os
+                # from functools import partial
                 print("Detected a Time lapse TYX or TZYX image")
                 ##This is doing okay with TZYX but if TYX it detects all spots if T is a Z.
                 # img = np.asarray(self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()])
@@ -659,27 +731,117 @@ class IdentifyQWidget(QWidget):
                 #Depending on the version of trackpy if somehow does the batch, but assigns all frame values to 0.
                 #this is to avoid this problem once you understand what happens wrong remove the first if and keep
                 #the elif portion
-                if len(img.shape) == 3:
-                    import pandas as pd
-                    local_f = pd.DataFrame()
-                    for j in range(img.shape[0]):
-                        temp_f = tp.locate(img[j],self.diameter_input.value(),minmass=self.mass_slider.value(),
-                                           engine="numba"
-                                           )
-                        print(temp_f)
-                        temp_f['frame'] = j
-                        local_f = pd.concat([local_f,temp_f])
-                    self.f = local_f
-                elif len(img.shape) == 4:
-                    print('Before batch:',img.shape)
-                    self.f = tp.batch(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
-                                    engine="numba",
-                                    processes=1,
-                                    )                    
+                # if len(img.shape) == 3:
+
+                
+                ### Multiprocessing Method python vanilla
+                # This has the same method and bug as tp.batch (when no particles are detected it hangs forever)
+                # =====================================================
+                # multiproc_locate = partial(tp.locate, 
+                #                         #    output_locate,
+                #                            diameter=self.diameter_input.value(),
+                #                   minmass=self.mass_slider.value(),engine="numba", separation=0
+                #                 #   **kwargs
+                #                   )
+                # # def multi_run_wrapper(args):
+                # #    return multi_locate(*args)
+
+                # num_items = img.shape[0]
+                # num_done = 0
+                # def handle_result(res):
+                #     global num_done
+                #     num_done += 1
+                #     print('finished item {} of {}.'.format(num_done, num_items))
+
+                # with Pool(os.cpu_count()) as p:
+                #     # temp_f = p.map(multiproc_locate,img)
+                #     mapped_f = p.apply_async(multiproc_locate,img,callback=handle_result)
+                   
+                #     p.close()
+                #     # p.join()
+                # if 'frame' in mapped_f[0]:
+                #     print("Somehow frame is already there")
+                #     local_f = pd.concat(mapped_f)
+                # else:
+                #     local_f = pd.DataFrame()
+                #     for j in range(img.shape[0]):
+                #         # print('Doing frame:',j)
+                #         # temp_f = tp.locate(img[j].compute(),self.diameter_input.value(),minmass=self.mass_slider.value(),
+                #         #                     engine="numba"
+                #         #                     )
+                #         mapped_f[j]['frame'] = j
+                #     local_f = pd.concat(mapped_f, ignore_index=True)
+                # self.f = local_f
+                ##ipyparallel method working assumes index starts at 0
+                # =====================================================
+                from ipyparallel import Client
+                # Connect to the IPython cluster
+                def parallel_multi_locate(images, diam, minmass):
+                    print(type(images[0]),": computing needed if dask Array")
+                    if type(images[0]) == "<class 'dask.array.core.Array'>":
+                    	print("Dask detected")
+                    # try:
+                    # 	images = images.compute()
+                    res = v.map(multi_locate, range(len(images)), images, [diam]*len(images), [minmass]*len(images))
+                    stdout0 = res.stdout
+                    while not res.ready():
+                        if res.stdout != stdout0:
+                            for i in range(0,len(res.stdout)):
+                                if res.stdout[i] != stdout0[i]:
+                                    print(('kernel' + str(i) + ':' + res.stdout[i][len(stdout0[i]):-1]))
+                                    stdout0 = res.stdout
+                        else:
+                            continue
+                    
+                    results = res.get()
+                    # Concatenate the results
+                    return pd.concat(results, ignore_index=True)
+
+                # View available engines
+                rc = Client()
+
+                print("Available engines:", len(rc))
+                dview = rc[:].use_cloudpickle()
+                # Direct view allows executing code directly on engines
+                v = rc.load_balanced_view()
+                    
+                self.f = parallel_multi_locate(img[:],self.diameter_input.value(),self.mass_slider.value())
+                # =====================================================
+                
+                ##Run slowly one by one
+                # =====================================================
+                # local_f = pd.DataFrame()
+                # ###Doing for all frames.
+                # for j in range(img.shape[0]):
+                #     print('Doing frame:',j)
+                # print(type(img[0]),": computing needed if dask array")
+                # if type(img[j]) == '<class 'dask.array.core.Array'>':
+                #     	print("Dask detected")
+                #     try:
+                #     	time_img = img[j].compute()
+                    # except:
+                #     	time_img = img[j]
+                #     temp_f = tp.locate(time_img,self.diameter_input.value(),minmass=self.mass_slider.value(),
+                #                         engine="numba"
+                #                         )
+                #     temp_f['frame'] = j
+                #     local_f = pd.concat([local_f,temp_f], ignore_index=True)
+                # self.f = local_f
+                # =====================================================
+                
+                #Standard tp.batch that bugs and hangs napari when no particles are found in a given frame
+                # =====================================================
+                # elif len(img.shape) == 4
+                # print('Before batch:',img.shape)
+                # self.f = tp.batch(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
+                #                 engine="numba",
+                #                 # processes=1,
+                #                 )                    
 
                 #TODO
                 #if min is not 0 we have to adjust F to bump it up
             else:
+                import trackpy as tp
                 #there's possibility of improvement here. I did scale == 1 because I am assuming
                 #that the time index is scaled at 1
                 #however if there's a 1um Z stack it will bug
@@ -687,7 +849,8 @@ class IdentifyQWidget(QWidget):
                     print("Detected a ZYX image")
                     img = np.asarray(self.viewer.layers[index_layer].data)
                     # img = self.viewer.layers[index_layer].data
-                    self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value())
+                    self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
+                                    engine="numba")
                     self.f['frame'] = 0
                 else:
                     print("Detected a Time lapse ZYX  image")
@@ -695,13 +858,16 @@ class IdentifyQWidget(QWidget):
                     #here
                     img = np.asarray(self.viewer.layers[index_layer].data[_time_locator])
                     # img = self.viewer.layers[index_layer].data[_time_locator]
-                    self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value())
+                    self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
+                                    engine="numba")
                     self.f['frame'] = _time_locator
         elif len(self.viewer.layers[index_layer].data.shape) == 2:
+            import trackpy as tp
             print("Detected only YX")
             img = np.asarray(self.viewer.layers[index_layer].data)
             # img = self.viewer.layers[index_layer].data
-            self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value())
+            self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
+                                    engine="numba")
             self.f['frame'] = 0
                 #TODO
         
@@ -734,8 +900,11 @@ class IdentifyQWidget(QWidget):
         #like this is opposite color of the image
         #make if smarter self.viewer.layers[index_layer].colormap.color has an array with the colors, we should be able to flip universaly 
         clr_name = self.viewer.layers[index_layer].colormap.name
-        clr_dict = {'green':'magenta',
-                    'red':'cyan',
+        clr_dict = {'lime':'red',
+                    # 'green':'magenta',
+                    'green':'red',
+                    'red' : 'lime',
+                    # 'red':'cyan',
                     'blue':'yellow',
                     'magenta':'green',
                     'cyan':'red',
@@ -822,10 +991,10 @@ class IdentifyQWidget(QWidget):
         ##pull from points layer see example below
         selected_layer = _get_choice_layer(self,self.layersbox)
         # selected_layer = self.viewer.layers.selection
-        if len(self.viewer.layers[selected_layer].data.shape) <= 3:
+        if self.viewer.layers.selection.active.data.shape[1] < 3:
             #manbearpig time lapse vs Zstack
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
-        elif len(self.viewer.layers[selected_layer].data.shape) > 3:
+        elif self.viewer.layers.selection.active.data.shape[1] >= 3:
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
             
         b = self.viewer.layers.selection.active.properties
@@ -1062,10 +1231,11 @@ class ColocalizationQWidget(QWidget):
              #manbearpig   
         # self.viewer.layers[0].data
         #need to make this smarter, if the layers are shuffled it breaks.
-            if len(_index_layer.data.shape) < 3:
+            
+            if _index_layer.data.shape[1] < 3:
                 df = pd.DataFrame(_index_layer.data, columns = ['frame','y','x'])
                 print("2D",df)
-            elif len(_index_layerdata.shape) >= 3:
+            elif _index_layer.data.shape[1] >= 3:
                 df = pd.DataFrame(_index_layer.data, columns = ['frame','z','y','x'])
                 print("3D",df)
 
@@ -1135,13 +1305,17 @@ class ColocalizationQWidget(QWidget):
         #               , xvals=np.linspace(0., 100., distances_list.shape[0]))
         _colocalizing = distances_list[distances_list < self.euc_distance.value()]
         #
-        print(tree.query_radius(AnchorPOS, r=self.euc_distance.value(), count_only=True))
-        ind = tree.query_radius(AnchorPOS, r=self.euc_distance.value()) 
-
+        #Is this faster than above?
+        #print(tree.query_radius(AnchorPOS, r=self.euc_distance.value(), count_only=True))
+        #ind = tree.query_radius(AnchorPOS, r=self.euc_distance.value()) 
+        
         
         _colocalizing_points = AnchorPOS[distances_list < self.euc_distance.value()]
+        print("Remove me:",_colocalizing_points.shape,QuestionPOS.shape)
+        
         coloc_name = "Coloc_"+self.points_question.currentText()+'_in_'+self.points_anchor.currentText()
         coloc_points = self.viewer.add_points(_colocalizing_points, opacity=0.31,
+                                              size=150,blending='additive',edge_width=0.15,symbol='square',
                                               name=coloc_name)
         coloc_points.scale = self.viewer.layers[0].scale
         
@@ -1230,10 +1404,12 @@ class ColocalizationQWidget(QWidget):
         #     df[key] = b[key]
         
         # self.viewer.layers[0].data
-        if len(self.viewer.layers[0].data.shape) <= 3:
+        # if len(self.viewer.layers[0].data.shape) <= 3:
+        if self.viewer.layers[_index_layer].data.shape[1] < 3:
+        
             df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
             print("2D",df)
-        elif len(self.viewer.layers[0].data.shape) > 3:
+        elif self.viewer.layers[_index_layer].data.shape[1] >= 3:
             df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x'])
             print("3D",df)
 
