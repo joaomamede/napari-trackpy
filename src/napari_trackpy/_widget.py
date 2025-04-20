@@ -67,7 +67,13 @@ def _get_open_filename(self,type='image',separator= " :: ",choice_widget=None):
         j = _get_choice_layer(self,self.layersbox)
     except:
         j = 0
-    _filename = os.path.splitext(self.viewer.layers[j]._source.path)[0]
+    try:
+        _filename = os.path.splitext(self.viewer.layers[j]._source.path)[0]
+    except:
+        try:
+            _filename = os.path.splitext(self.viewer.layers[j]._filename)[0]
+        except:
+            _filename = 'unknown_file.nd2'
     return _filename
     
 # def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
@@ -393,8 +399,34 @@ class IdentifyQWidget(QWidget):
     # in one of two ways:
     # 1. use a parameter called `napari_viewer`, as done here
     # 2. use a type annotation of 'napari.viewer.Viewer' for any parameter
+    def _parse_diameter(self) -> int | tuple[int, int, int]:
+            """
+            Return an int if the user typed one number,
+            otherwise a (z, y, x) tuple of three ints.
+            """
+            txt = self.diameter_input.text().strip()
+            if "," in txt:
+                parts = [int(p) for p in txt.split(",") if p.strip()]
+                if len(parts) != 3:
+                    raise ValueError(
+                        "Diameter tuple must have exactly three integers, e.g. 3,5,5"
+                    )
+                return tuple(parts)
+            return int(txt or 5)   # fall back to default if box is empty
+        
+    def _diameter_scalar(self) -> int:
+        """
+        Return an **int** you can plug into radius‑type maths.
 
+        * integer → that same integer  
+        * tuple   → its last element (x‑axis), e.g. (3,5,5) → 5
+        """
+        d = self._parse_diameter()          # from the previous patch
+        return d[-1] if isinstance(d, tuple) else d
+        
+        
     def __init__(self, napari_viewer):
+    
         super().__init__()
         self.viewer = napari_viewer
         
@@ -418,12 +450,17 @@ class IdentifyQWidget(QWidget):
         self.mass_slider.setValue(25000)
         l2 = QLabel()
         
-        l2.setText("Diameter of the particle")
-        self.diameter_input = QSpinBox()
-        self.diameter_input.setRange(1, 19)
-        self.diameter_input.setSingleStep(2)
-        self.diameter_input.setValue(5)
-
+        # l2.setText("Diameter of the particle")
+        # self.diameter_input = QSpinBox()
+        # self.diameter_input.setRange(1, 19)
+        # self.diameter_input.setSingleStep(2)
+        # self.diameter_input.setValue(5)
+        
+        l2.setText("Diameter (int or tuple)")
+        self.diameter_input = QLineEdit()
+        self.diameter_input.setPlaceholderText("5    or    3,5,5")
+        self.diameter_input.setText("3,5,5")        
+        
         l3 = QLabel()
         l3.setText("Size cutoff (Select for usage)")
         self.layoutH0 = QHBoxLayout()
@@ -655,10 +692,14 @@ class IdentifyQWidget(QWidget):
             if self.viewer.layers[index_layer].scale[0] == 1:
                 input_shape = self.viewer.layers[index_layer].data[i].shape
             else: input_shape = self.viewer.layers[index_layer].data.shape
+            _diam = self._diameter_scalar()         # int no matter what user typed
+            _radius = (_diam / 2) - 0.5              # same formula you had before
+
             mask_temp, idx_temp = make_labels_trackpy_links(
                 input_shape,
-                # self.viewer.layers[index_layer].data[i],
-                temp,radius=((self.diameter_input.value())/2)-0.5,
+                # self.viewer.lcp ayers[index_layer].data[i],
+                temp,
+                radius=_radius,
                 # _round=False,
                 _algo=self.masks_dict[self.masks_option.currentIndex()],
                 )
@@ -680,196 +721,123 @@ class IdentifyQWidget(QWidget):
     
     # @thread_worker
     def _on_click(self):
+        from .helpers_axes import infer_axes
+        import trackpy as tp
+        import pandas as pd
+        
         index_layer = _get_choice_layer(self,self.layersbox)
         self.viewer.layers[index_layer].name
         ##this only works for napari-bioformats
         # if self.filename_edit.text() == "Spots.csv":
         # name_points = self.viewer.layers[index_layer].name.split(":")[0]
-        name_points = self.viewer.layers[index_layer].name.split("::")[1]
+        name_points = self.viewer.layers[index_layer].name.split("::")[-1]
         self.filename_edit.setText(_get_open_filename(
                 self)+'_'+name_points+"_Spots.csv")
         # else:
         #     temp_path = self.filename_edit.txt()
         #     self.filename_edit.setText(temp_path.strip_get_open_filename(
         #             self)+'_'+self.viewer.layers[index_layer].name+"_Spots_.csv")
-        print("Detecting points on layer:",index_layer)
-        #if its time or Z
-        #locating steps
-        if len(self.viewer.layers[index_layer].data.shape) >= 3:
-            print("Detected more than 3 dimensions")
-            if self.choice.isChecked():
-                import pandas as pd
-                import trackpy as tp
+
+        layer = self.viewer.layers[index_layer]
+        axes  = infer_axes(layer)         # Axes(order='tzyx', t=0, z=1, y=2, x=3)
+        diam    = self._parse_diameter()
+        minmass = self.mass_slider.value() 
+        print(axes)
+        print("Axis order detected:", axes.order)
                 
-                def multi_locate(i,_img,_diam,_minmass):
-                    import trackpy as tp
-                    import pandas as pd
-                    import dask
-                    print("Started Frame: ",i)
-                    try:
-                        _img = _img.compute()
-                    except Exception as error:
-                        print("An exception occurred:", error)
-                        
-                    temp_f = tp.locate(_img,_diam,minmass=_minmass,
-                                    engine="numba"
-                                    )
-                    print("Done Frame: ",i)
-                    temp_f['frame'] = i
-                    
-                    return temp_f
-                
-                
-                # from multiprocessing import Pool
-                # import os
-                # from functools import partial
-                print("Detected a Time lapse TYX or TZYX image")
-                ##This is doing okay with TZYX but if TYX it detects all spots if T is a Z.
-                # img = np.asarray(self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()])
-                img = self.viewer.layers[index_layer].data[self.min_timer.value():self.max_timer.value()]
+        # ------------------------------------------------------------------
+        # Helpers to slice data
+        # ------------------------------------------------------------------
+        def _plane2d(t_idx=0, z_idx=0):
+            """Return a 2‑D YX plane."""
+            sl = [slice(None)] * layer.data.ndim
+            if axes.t is not None:
+                sl[axes.t] = t_idx
+            if axes.z is not None:
+                sl[axes.z] = z_idx
+            return np.asarray(layer.data[tuple(sl)])
 
-                #Depending on the version of trackpy if somehow does the batch, but assigns all frame values to 0.
-                #this is to avoid this problem once you understand what happens wrong remove the first if and keep
-                #the elif portion
-                # if len(img.shape) == 3:
+        def _stack3d(t_idx=0):
+            """Return a full Z‑stack (ZYX) at a given time index."""
+            sl = [slice(None)] * layer.data.ndim
+            if axes.t is not None:
+                sl[axes.t] = t_idx
+            # leave Z slice(None) → full stack
+            return np.asarray(layer.data[tuple(sl)])
 
-                
-                ### Multiprocessing Method python vanilla
-                # This has the same method and bug as tp.batch (when no particles are detected it hangs forever)
-                # =====================================================
-                # multiproc_locate = partial(tp.locate, 
-                #                         #    output_locate,
-                #                            diameter=self.diameter_input.value(),
-                #                   minmass=self.mass_slider.value(),engine="numba", separation=0
-                #                 #   **kwargs
-                #                   )
-                # # def multi_run_wrapper(args):
-                # #    return multi_locate(*args)
+        # ------------------------------------------------------------------
+        # A)  TIME‑LAPSE  — run on **all** frames if the user ticked the box
+        # ------------------------------------------------------------------
+        if axes.t is not None and self.choice.isChecked():
+            print(f"Time‑series detected ({axes.order}); running across frames")
+            t0, t1   = self.min_timer.value(), self.max_timer.value()
+            t_range  = range(t0, t1)
+            image_seq = (
+                [_plane2d(t_idx=t) for t in t_range]     # TYX
+                if axes.z is None
+                else [_stack3d(t_idx=t) for t in t_range]  # TZYX
+            )
 
-                # num_items = img.shape[0]
-                # num_done = 0
-                # def handle_result(res):
-                #     global num_done
-                #     num_done += 1
-                #     print('finished item {} of {}.'.format(num_done, num_items))
+            # ---------- ipyparallel (default) ------------------------------------
+            from ipyparallel import Client
+            def _loc_worker(frame_idx, img):
+                import trackpy as tp, pandas as pd
+                try: img = img.compute()      # dask → numpy if needed
+                except AttributeError: pass
+                df = tp.locate(img, diam, minmass=minmass, engine="numba")
+                df["frame"] = frame_idx
+                return df
 
-                # with Pool(os.cpu_count()) as p:
-                #     # temp_f = p.map(multiproc_locate,img)
-                #     mapped_f = p.apply_async(multiproc_locate,img,callback=handle_result)
-                   
-                #     p.close()
-                #     # p.join()
-                # if 'frame' in mapped_f[0]:
-                #     print("Somehow frame is already there")
-                #     local_f = pd.concat(mapped_f)
-                # else:
-                #     local_f = pd.DataFrame()
-                #     for j in range(img.shape[0]):
-                #         # print('Doing frame:',j)
-                #         # temp_f = tp.locate(img[j].compute(),self.diameter_input.value(),minmass=self.mass_slider.value(),
-                #         #                     engine="numba"
-                #         #                     )
-                #         mapped_f[j]['frame'] = j
-                #     local_f = pd.concat(mapped_f, ignore_index=True)
-                # self.f = local_f
-                ##ipyparallel method working assumes index starts at 0
-                # =====================================================
-                from ipyparallel import Client
-                # Connect to the IPython cluster
-                def parallel_multi_locate(images, diam, minmass):
-                    print(type(images[0]),": computing needed if dask Array")
-                    if type(images[0]) == "<class 'dask.array.core.Array'>":
-                    	print("Dask detected")
-                    # try:
-                    # 	images = images.compute()
-                    res = v.map(multi_locate, range(len(images)), images, [diam]*len(images), [minmass]*len(images))
-                    stdout0 = res.stdout
-                    while not res.ready():
-                        if res.stdout != stdout0:
-                            for i in range(0,len(res.stdout)):
-                                if res.stdout[i] != stdout0[i]:
-                                    print(('kernel' + str(i) + ':' + res.stdout[i][len(stdout0[i]):-1]))
-                                    stdout0 = res.stdout
-                        else:
-                            continue
-                    
-                    results = res.get()
-                    # Concatenate the results
-                    return pd.concat(results, ignore_index=True)
+            rc = Client()
+            v  = rc.load_balanced_view()
+            print("Using", len(rc), "ipyparallel engines")
 
-                # View available engines
-                rc = Client()
+            async_res = v.map(_loc_worker, list(t_range), image_seq)
+            self.f = pd.concat(async_res.get(), ignore_index=True)
 
-                print("Available engines:", len(rc))
-                dview = rc[:].use_cloudpickle()
-                # Direct view allows executing code directly on engines
-                v = rc.load_balanced_view()
-                    
-                self.f = parallel_multi_locate(img[:],self.diameter_input.value(),self.mass_slider.value())
-                # =====================================================
-                
-                ##Run slowly one by one
-                # =====================================================
-                # local_f = pd.DataFrame()
-                # ###Doing for all frames.
-                # for j in range(img.shape[0]):
-                #     print('Doing frame:',j)
-                # print(type(img[0]),": computing needed if dask array")
-                # if type(img[j]) == '<class 'dask.array.core.Array'>':
-                #     	print("Dask detected")
-                #     try:
-                #     	time_img = img[j].compute()
-                    # except:
-                #     	time_img = img[j]
-                #     temp_f = tp.locate(time_img,self.diameter_input.value(),minmass=self.mass_slider.value(),
-                #                         engine="numba"
-                #                         )
-                #     temp_f['frame'] = j
-                #     local_f = pd.concat([local_f,temp_f], ignore_index=True)
-                # self.f = local_f
-                # =====================================================
-                
-                #Standard tp.batch that bugs and hangs napari when no particles are found in a given frame
-                # =====================================================
-                # elif len(img.shape) == 4
-                # print('Before batch:',img.shape)
-                # self.f = tp.batch(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
-                #                 engine="numba",
-                #                 # processes=1,
-                #                 )                    
+            # ------------------------------------------------------------------
+            # ## Alternative multiprocessing.Pool method (commented, ready)
+            # ------------------------------------------------------------------
+            # from multiprocessing import Pool
+            # with Pool() as pool:
+            #     results = pool.starmap(
+            #         _loc_worker, [(i, img) for i, img in zip(t_range, image_seq)]
+            #     )
+            # self.f = pd.concat(results, ignore_index=True)
+            # ------------------------------------------------------------------
 
-                #TODO
-                #if min is not 0 we have to adjust F to bump it up
-            else:
-                import trackpy as tp
-                #there's possibility of improvement here. I did scale == 1 because I am assuming
-                #that the time index is scaled at 1
-                #however if there's a 1um Z stack it will bug
-                if self.viewer.layers[index_layer].scale[0] != 1:
-                    print("Detected a ZYX image")
-                    img = np.asarray(self.viewer.layers[index_layer].data)
-                    # img = self.viewer.layers[index_layer].data
-                    self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
-                                    engine="numba")
-                    self.f['frame'] = 0
-                else:
-                    print("Detected a Time lapse ZYX  image")
-                    _time_locator = self.viewer.dims.current_step[0]
-                    #here
-                    img = np.asarray(self.viewer.layers[index_layer].data[_time_locator])
-                    # img = self.viewer.layers[index_layer].data[_time_locator]
-                    self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
-                                    engine="numba")
-                    self.f['frame'] = _time_locator
-        elif len(self.viewer.layers[index_layer].data.shape) == 2:
-            import trackpy as tp
-            print("Detected only YX")
-            img = np.asarray(self.viewer.layers[index_layer].data)
-            # img = self.viewer.layers[index_layer].data
-            self.f = tp.locate(img,self.diameter_input.value(),minmass=self.mass_slider.value(),
-                                    engine="numba")
-            self.f['frame'] = 0
-                #TODO
+        # ------------------------------------------------------------------
+        # B)  SINGLE time‑point when data have a T axis  (TYX or TZYX)
+        # ------------------------------------------------------------------
+        elif axes.t is not None:
+            current_t = self.viewer.dims.current_step[axes.t]
+            print(f"Single time‑point (t={current_t}) detected")
+
+            if axes.z is None:                       # TYX  → 2‑D frame
+                img = _plane2d(t_idx=current_t)
+            else:                                    # TZYX → full 3‑D stack
+                img = _stack3d(t_idx=current_t)
+
+            self.f = tp.locate(img, diam, minmass=minmass, engine="numba")
+            self.f["frame"] = current_t
+
+        # ------------------------------------------------------------------
+        # C)  One 3‑D Z‑stack (no time)   ZYX
+        # ------------------------------------------------------------------
+        elif axes.z is not None:
+            print("3‑D z‑stack detected (ZYX)")
+            img3d = np.asarray(layer.data)
+            self.f = tp.locate(img3d, diam, minmass=minmass, engine="numba")
+            self.f["frame"] = 0
+
+        # ------------------------------------------------------------------
+        # D)  Plain 2‑D image (YX)
+        # ------------------------------------------------------------------
+        else:
+            print("Single 2‑D image detected (YX)")
+            img2d = np.asarray(layer.data)
+            self.f = tp.locate(img2d, diam, minmass=minmass, engine="numba")
+            self.f["frame"] = 0
         
         #filtering steps
         if len(self.viewer.layers[index_layer].data.shape) <= 3:
@@ -877,9 +845,20 @@ class IdentifyQWidget(QWidget):
                     self.f = self.f[ (self.f['ecc'] < self.ecc_input.value())
                     ]
         if self.size_filter_tick.isChecked():
-                self.f = self.f[ (self.f['size'] < self.size_filter_input.value())
-                   ]
-        
+            cutoff = self.size_filter_input.value()
+
+            if "size" in self.f.columns:                      # isotropic case
+                self.f = self.f[self.f["size"] < cutoff]
+
+            else:                                             # anisotropic columns
+                # pick the axes you care about
+                axes = [c for c in ("size_x", "size_y") if c in self.f.columns]
+
+                if axes:                                      # protect against typos
+                    mask = (self.f[axes] < cutoff).all(axis=1)
+                    self.f = self.f[mask]
+                # if neither size_x nor size_y exists, do nothing (or raise an error)
+                
         #transforming data to pandas ready for spots
         if len(self.viewer.layers[index_layer].data.shape) <= 3:
             #XYZ
@@ -893,8 +872,11 @@ class IdentifyQWidget(QWidget):
         #TZYX
         elif len(self.viewer.layers[index_layer].data.shape) > 3:
             _points = self.f.loc[:,['frame','z','y','x']]
-        _metadata = self.f.loc[:,['mass','size','ecc']]
-
+            
+        try:
+            _metadata = self.f.loc[:,['mass','size','ecc']]
+        except:
+            _metadata = self.f.loc[:,['mass','size_x','size_y','size_z']]
         #self.viewer.layers[index_layer]
         # self.viewer.layers[index_layer].colormap.name)
         #like this is opposite color of the image
@@ -1146,11 +1128,12 @@ class LinkingQWidget(QWidget):
 
 
 class ColocalizationQWidget(QWidget):
-    
+
     # from support_libraries import _get_open_filename
 
     def __init__(self, napari_viewer):
         super().__init__()
+        import pyqtgraph as pg
         self.viewer = napari_viewer
 
         l1 = QLabel('Points that are the "anchor"')
@@ -1216,7 +1199,7 @@ class ColocalizationQWidget(QWidget):
         self.layout().addLayout(grid_layout)
         self.layout().addWidget(save_btn)
 
-        import pyqtgraph as pg
+
         
         self._plt = pg.plot()
         self.layout().addWidget(self._plt)
@@ -1284,11 +1267,20 @@ class ColocalizationQWidget(QWidget):
         
         tree = KDTree(QuestionPOS, leaf_size=1)
         distances_list = tree.query(AnchorPOS)[0]
-        
-
         _hist,_bins = np.histogram(distances_list,bins=100)
         # _plt.showGrid(x=True, y=True)()
         print(distances_list,_bins,_hist)
+        
+        # try:
+        #     idx   = int(np.random.randint(16))   # cast NumPy scalar → builtin int
+        #     cycle = 16                           # already a plain int
+        #     line1 = self._plt.plot(
+        #         _bins[:-1], _hist, 
+        #         pen=(idx, cycle),  
+        #         name="green"
+        #         )    
+        # except: print("pyqtgraph failed")
+        
         line1 = self._plt.plot(
             _bins[:-1],_hist,
             #   distances_list, 
@@ -1407,10 +1399,10 @@ class ColocalizationQWidget(QWidget):
         # if len(self.viewer.layers[0].data.shape) <= 3:
         if self.viewer.layers[_index_layer].data.shape[1] < 3:
         
-            df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
+            df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x']).dropna()
             print("2D",df)
         elif self.viewer.layers[_index_layer].data.shape[1] >= 3:
-            df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x'])
+            df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x']).dropna()
             print("3D",df)
 
         # b = self.viewer.layers.selection.active.properties
