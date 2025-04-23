@@ -424,7 +424,7 @@ class IdentifyQWidget(QWidget):
         d = self._parse_diameter()          # from the previous patch
         return d[-1] if isinstance(d, tuple) else d
         
-        
+            
     def __init__(self, napari_viewer):
     
         super().__init__()
@@ -608,7 +608,11 @@ class IdentifyQWidget(QWidget):
 
         self.layout().addLayout(self.batch_grid_layout)
         self.layout().addWidget(_batch_btn)
-        
+
+        # NEW — batch across multiple files
+        _batch_files_btn = QPushButton('Batch Identify Files')
+        _batch_files_btn.clicked.connect(self._batch_files)
+        self.layout().addWidget(_batch_files_btn)
         
 
 
@@ -627,14 +631,30 @@ class IdentifyQWidget(QWidget):
         else:
             return "/tmp/Null.csv"
     
+    # def _refresh_layers(self):
+    #     current = self.layersbox.currentIndex()
+    #     self.layersbox.clear()
+    #     for layer in self.viewer.layers:
+    #         if layer._type_string == 'image':
+    #             self.layersbox.addItem(layer.name)
+    #     self.layersbox.setCurrentIndex(current)
+
+
     def _refresh_layers(self):
-        i = self.layersbox.currentIndex()
+        # update the combobox first
+        current = self.layersbox.currentText()
+        self.layersbox.blockSignals(True)        # avoid re‑entrancy
         self.layersbox.clear()
         for layer in self.viewer.layers:
-            if layer._type_string == 'image':
+            if layer._type_string == "image":
                 self.layersbox.addItem(layer.name)
-        self.layersbox.setCurrentIndex(i)
+        if current:
+            self.layersbox.setCurrentText(current)
+        self.layersbox.blockSignals(False)
 
+        # now rebuild the per‑channel grid
+        self._rebuild_batch_grid()
+        
     # def _refresh_layers(self,_widget,_type='image'):
     #     i = _widget.currentIndex()
     #     _widget.clear()
@@ -914,7 +934,99 @@ class IdentifyQWidget(QWidget):
                 self._masks_layer = self.viewer.add_labels(_masks)
                 self._masks_layer.scale = self.viewer.layers[index_layer].scale
 
+    def _batch_files(self):
+        """Open selected files with aicsimageio and run batch_on_click on each."""
+        # 1) ask for one or more filenames
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select image files",
+            "",
+            "Bio‑Formats images (*.nd2 *.czi *.ome.tif *.ome.tiff *.tif *.tiff);;"
+            "All files (*)",
+        )
+        if not files:
+            return
 
+        # 2) loop over files
+        for fname in files:
+            print(f"\n=== Processing {fname} ===")
+            try:
+                # Clear existing layers to avoid name clashes (optional; comment out
+                # if you prefer to keep everything in the viewer)
+                self._capture_batch_config()
+                self.viewer.layers.clear()
+
+                # Load with the napari‑aicsimageio plugin
+                self.viewer.open(fname, plugin="napari-aicsimageio")
+                
+            except Exception as err:
+                print(f"Could not open {fname}: {err}")
+                continue
+
+            # 3) run channel batch identification exactly as usual
+            try:
+                self.batch_on_click()
+            except Exception as err:
+                print(f"Identify failed on {fname}: {err}")
+                continue
+            
+    def _capture_batch_config(self):
+        cfg = {}
+        rows = self.batch_grid_layout.rowCount()
+        for r in range(rows):
+            w_label = self.batch_grid_layout.itemAtPosition(r, 0)
+            w_spin  = self.batch_grid_layout.itemAtPosition(r, 1)
+            w_tick  = self.batch_grid_layout.itemAtPosition(r, 2)
+            if not (w_label and w_spin and w_tick):        # <-- guard
+                continue
+            name  = w_label.widget().text()
+            mass  = w_spin.widget().value()
+            check = w_tick.widget().isChecked()
+            cfg[name.split("::")[-1]] = (mass, check)      # keep suffix only
+        self._batch_cfg = cfg                  # new attribute
+
+    def _rebuild_batch_grid(self):
+        # ---------- remove old widgets safely ---------------------------
+        while self.batch_grid_layout.count():
+            item = self.batch_grid_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()          # <- enough; no setParent(None)
+
+        # ---------- add fresh widgets -----------------------------------
+        for k in range(self.layersbox.count()):
+            # **always give ‘self’ as parent** → they’re born inside the panel
+            label = QLabel(self.layersbox.itemText(k), self)
+            spin  = QSpinBox(self)
+            tick  = QCheckBox(self)
+
+            spin.setRange(0, int(1e6))
+            spin.setSingleStep(200)
+            spin.setValue(4000)
+            tick.setChecked(True)
+
+            self.batch_grid_layout.addWidget(label, k, 0)
+            self.batch_grid_layout.addWidget(spin,  k, 1)
+            self.batch_grid_layout.addWidget(tick,  k, 2)
+
+        self._apply_batch_config()        # restore saved masses / checks
+        
+    def _apply_batch_config(self):
+        cfg  = getattr(self, "_batch_cfg", {})
+        rows = self.batch_grid_layout.rowCount()
+        for r in range(rows):
+            w_label = self.batch_grid_layout.itemAtPosition(r, 0)
+            if not w_label:
+                continue                                   # <-- guard
+            key = w_label.widget().text().split("::")[-1]
+            if key not in cfg:
+                continue
+            mass, checked = cfg[key]
+            w_spin = self.batch_grid_layout.itemAtPosition(r, 1)
+            w_tick = self.batch_grid_layout.itemAtPosition(r, 2)
+            if w_spin and w_tick:                          # <-- guard
+                w_spin.widget().setValue(mass)
+                w_tick.widget().setChecked(checked)
 
     def batch_on_click(self):
         print(self.batch_grid_layout.count())
@@ -1358,21 +1470,6 @@ class ColocalizationQWidget(QWidget):
             #point_list that is not the anchor, so it should be ready to go
             self.calculate_colocalizing()
     
-    def _refresh_layers(self):
-        i = self.points_anchor.currentIndex()
-        self.points_anchor.clear()
-        for layer in self.viewer.layers:
-            if layer._type_string == 'points':
-                self.points_anchor.addItem(layer.name)
-        self.points_anchor.setCurrentIndex(i)
-
-        i = self.points_question.currentIndex()
-        self.points_question.clear()
-        for layer in self.viewer.layers:
-            if layer._type_string == 'points':
-                self.points_question.addItem(layer.name)
-        self.points_question.setCurrentIndex(i)
-
     # def _select_layer(self,i):
     #     ##needs to be by name
     #     print("Layer to detect:", i)
