@@ -986,6 +986,8 @@ class IdentifyQWidget(QWidget):
         self._batch_cfg = cfg                  # new attribute
 
     def _rebuild_batch_grid(self):
+        #save config
+        self._capture_batch_config()
         # ---------- remove old widgets safely ---------------------------
         while self.batch_grid_layout.count():
             item = self.batch_grid_layout.takeAt(0)
@@ -1002,7 +1004,7 @@ class IdentifyQWidget(QWidget):
 
             spin.setRange(0, int(1e6))
             spin.setSingleStep(200)
-            spin.setValue(4000)
+            spin.setValue(3000)
             tick.setChecked(True)
 
             self.batch_grid_layout.addWidget(label, k, 0)
