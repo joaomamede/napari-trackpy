@@ -46,6 +46,57 @@ def _populate_layers(self,_widget,_type='image'):
         if layer._type_string == _type:
             _widget.addItem(layer.name)
 
+
+def _points_kwargs_compat(viewer, kwargs):
+    import inspect
+
+    try:
+        params = inspect.signature(viewer.add_points).parameters
+    except Exception:
+        return dict(kwargs)
+
+    out = dict(kwargs)
+    if (
+        "border_width" in params
+        and "edge_width" in out
+        and "border_width" not in out
+    ):
+        out["border_width"] = out.pop("edge_width")
+    elif "edge_width" in params and "border_width" in out and "edge_width" not in out:
+        out["edge_width"] = out.pop("border_width")
+
+    if (
+        "border_color" in params
+        and "edge_color" in out
+        and "border_color" not in out
+    ):
+        out["border_color"] = out.pop("edge_color")
+    elif "edge_color" in params and "border_color" in out and "edge_color" not in out:
+        out["edge_color"] = out.pop("border_color")
+
+    return out
+
+
+def _add_points_compat(viewer, data, **kwargs):
+    compat_kwargs = _points_kwargs_compat(viewer, kwargs)
+    try:
+        return viewer.add_points(data, **compat_kwargs)
+    except TypeError:
+        fallback = dict(kwargs)
+        if "edge_width" in fallback and "border_width" not in fallback:
+            fallback["border_width"] = fallback.pop("edge_width")
+        elif "border_width" in fallback and "edge_width" not in fallback:
+            fallback["edge_width"] = fallback.pop("border_width")
+
+        if "edge_color" in fallback and "border_color" not in fallback:
+            fallback["border_color"] = fallback.pop("edge_color")
+        elif "border_color" in fallback and "edge_color" not in fallback:
+            fallback["edge_color"] = fallback.pop("border_color")
+
+        if fallback == compat_kwargs:
+            raise
+        return viewer.add_points(data, **fallback)
+
 def _get_choice_layer(self,_widget):    
     for j,layer in enumerate(self.viewer.layers):
         if layer.name == _widget.currentText():
@@ -430,9 +481,9 @@ class IdentifyQWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         
-        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',edge_width=0.15)
+        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',border_width=0.15)
         # edge_color='red'
-        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',edge_width=0.15)
+        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',border_width=0.15)
         # ,edge_color='green'
         #comboBox for layer selection
         self.llayer = QLabel()
@@ -919,7 +970,14 @@ class IdentifyQWidget(QWidget):
         #     point_colors = 'yellow'
         point_colors = clr_dict[clr_name]
         if len(_points) > 0:
-            self._points_layer = self.viewer.add_points(_points,name="Points "+name_points,properties=_metadata,**self.points_options,edge_color=point_colors)
+            self._points_layer = _add_points_compat(
+                self.viewer,
+                _points,
+                name="Points "+name_points,
+                properties=_metadata,
+                edge_color=point_colors,
+                **self.points_options,
+            )
             self._points_layer.scale = self.viewer.layers[index_layer].scale
 
             self.btn2.setEnabled(True)
@@ -1078,7 +1136,12 @@ class IdentifyQWidget(QWidget):
             _metadata = f2.loc[:,['mass','size']]
 
         self.f2 = f2
-        self._points_layer_filter = self.viewer.add_points(_points,properties=_metadata,**self.points_options2)
+        self._points_layer_filter = _add_points_compat(
+            self.viewer,
+            _points,
+            properties=_metadata,
+            **self.points_options2,
+        )
         self._points_layer_filter.scale = self.viewer.layers[index_layer].scale
 
     def _save_results(self):
@@ -1260,12 +1323,10 @@ class ColocalizationQWidget(QWidget):
         self.points_question = QComboBox()
         # self.points_question.currentIndexChanged.connect(self._select_layer)
 
-        _populate_layers(self,self.points_anchor,"points")
-        _populate_layers(self,self.points_question,"points")
-
         self.viewer.layers.events.removed.connect(self._refresh_layers)
         self.viewer.layers.events.inserted.connect(self._refresh_layers)
         self.viewer.layers.events.reordered.connect(self._refresh_layers)
+        self.viewer.layers.events.changed.connect(self._refresh_layers)
         
         l4 = QLabel("Max Distance (in sub-pixels)")
         self.layoutH0 = QHBoxLayout()
@@ -1317,6 +1378,43 @@ class ColocalizationQWidget(QWidget):
         
         self._plt = pg.plot()
         self.layout().addWidget(self._plt)
+        self._refresh_layers()
+
+    def _points_layers_for_coloc(self):
+        from napari.layers import Points
+
+        # Colocalization should work with any napari Points layer, regardless of name.
+        return [layer for layer in self.viewer.layers if isinstance(layer, Points)]
+
+    def _get_selected_points_layer(self, widget):
+        layer_name = widget.currentText()
+        for layer in self._points_layers_for_coloc():
+            if layer.name == layer_name:
+                return layer
+        raise ValueError(f"No valid Points layer selected for '{layer_name}'")
+
+    def _refresh_layers(self, event=None):
+        anchor_current = self.points_anchor.currentText()
+        question_current = self.points_question.currentText()
+        layer_names = [layer.name for layer in self._points_layers_for_coloc()]
+
+        for widget, current_text in (
+            (self.points_anchor, anchor_current),
+            (self.points_question, question_current),
+        ):
+            widget.blockSignals(True)
+            widget.clear()
+            widget.addItems(layer_names)
+            if current_text in layer_names:
+                widget.setCurrentText(current_text)
+            widget.blockSignals(False)
+
+        if (
+            self.points_anchor.count() > 1
+            and self.points_anchor.currentText() == self.points_question.currentText()
+        ):
+            next_idx = (self.points_anchor.currentIndex() + 1) % self.points_question.count()
+            self.points_question.setCurrentIndex(next_idx)
 
     def _save_results(self):
         import pandas as pd
@@ -1345,8 +1443,7 @@ class ColocalizationQWidget(QWidget):
 
     def open_file_dialog(self):
         from pathlib import Path
-        filename, ok = QFileDialog.getSave
-        FileName(
+        filename, _ = QFileDialog.getSaveFileName(
             self,
             "Select a File", 
             "/tmp/", 
@@ -1363,10 +1460,17 @@ class ColocalizationQWidget(QWidget):
         import pyqtgraph as pg
         from sklearn.neighbors import KDTree
         print("Doing Colocalization")
+        if self.points_anchor.count() == 0 or self.points_question.count() == 0:
+            print("No points layers available for colocalization.")
+            return
+
         QuestionPOS = self._get_points(self.points_question)
         #print(QuestionPOS)
         AnchorPOS = self._get_points(self.points_anchor)
         #print(AnchorPOS)
+        if QuestionPOS.size == 0 or AnchorPOS.size == 0:
+            print("Selected Spots layer has no points.")
+            return
 
         #scipy way
         # question_kd = scipy.spatial.cKDTree(QuestionPOS,
@@ -1380,7 +1484,7 @@ class ColocalizationQWidget(QWidget):
         #scikitlearn
         
         tree = KDTree(QuestionPOS, leaf_size=1)
-        distances_list = tree.query(AnchorPOS)[0]
+        distances_list = tree.query(AnchorPOS)[0].ravel()
         _hist,_bins = np.histogram(distances_list,bins=100)
         # _plt.showGrid(x=True, y=True)()
         print(distances_list,_bins,_hist)
@@ -1409,21 +1513,29 @@ class ColocalizationQWidget(QWidget):
  
         # self._plt.setImage(distances_list
         #               , xvals=np.linspace(0., 100., distances_list.shape[0]))
-        _colocalizing = distances_list[distances_list < self.euc_distance.value()]
+        mask = distances_list < self.euc_distance.value()
+        _colocalizing = distances_list[mask]
         #
         #Is this faster than above?
         #print(tree.query_radius(AnchorPOS, r=self.euc_distance.value(), count_only=True))
         #ind = tree.query_radius(AnchorPOS, r=self.euc_distance.value()) 
         
         
-        _colocalizing_points = AnchorPOS[distances_list < self.euc_distance.value()]
+        _colocalizing_points = AnchorPOS[mask]
         print("Remove me:",_colocalizing_points.shape,QuestionPOS.shape)
         
         coloc_name = "Coloc_"+self.points_question.currentText()+'_in_'+self.points_anchor.currentText()
-        coloc_points = self.viewer.add_points(_colocalizing_points, opacity=0.31,
-                                              size=150,blending='additive',edge_width=0.15,symbol='square',
-                                              name=coloc_name)
-        coloc_points.scale = self.viewer.layers[0].scale
+        coloc_points = _add_points_compat(
+            self.viewer,
+            _colocalizing_points,
+            opacity=0.31,
+            size=150,
+            blending='additive',
+            border_width=0.15,
+            symbol='square',
+            name=coloc_name,
+        )
+        coloc_points.scale = self._get_selected_points_layer(self.points_anchor).scale
         
         l_coloc = QLabel("Number of colocalizing in "+coloc_name+":"+str(
             len(AnchorPOS))+" "+str(
@@ -1481,32 +1593,17 @@ class ColocalizationQWidget(QWidget):
     
     def _get_points(self,_widget):
         import pandas as pd
-        _index_layer = _get_choice_layer(self,_widget)
-        
-        # self.viewer.layers[_widget.currentIndex()].data
-        # if len(self.viewer.layers[_index_layer].data.shape) < 3:
-        #     df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x'])
-        #     print("2D",df)
-        # elif len(self.viewer.layers[_widget.currentIndex()].data.shape) >= 3:
-        #     df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','z','y','x'])
-        #     print("3D",df)
-        # b = self.viewer.layers.selection.active.properties
-        # for key in b.keys():
-        #     df[key] = b[key]
-        
-        # self.viewer.layers[0].data
-        # if len(self.viewer.layers[0].data.shape) <= 3:
-        if self.viewer.layers[_index_layer].data.shape[1] < 3:
-        
-            df = pd.DataFrame(self.viewer.layers[_index_layer].data, columns = ['frame','y','x']).dropna()
-            print("2D",df)
-        elif self.viewer.layers[_index_layer].data.shape[1] >= 3:
-            df = pd.DataFrame(self.viewer.layers[ _index_layer].data, columns = ['frame','z','y','x']).dropna()
-            print("3D",df)
 
-        # b = self.viewer.layers.selection.active.properties
-        #error is here somehow now
-        # for key in b.keys():
-        #     df[key] = b[key]
-    
-        return df
+        layer = self._get_selected_points_layer(_widget)
+        points = np.asarray(layer.data)
+        if points.size == 0:
+            return points
+
+        if points.shape[1] < 3:
+            df = pd.DataFrame(points, columns=['frame', 'y', 'x']).dropna()
+            print("2D", df)
+        else:
+            df = pd.DataFrame(points, columns=['frame', 'z', 'y', 'x']).dropna()
+            print("3D", df)
+
+        return df.to_numpy()
