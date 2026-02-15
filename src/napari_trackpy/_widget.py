@@ -6,7 +6,9 @@ see: https://napari.org/stable/plugins/guides.html?#widgets
 
 Replace code below according to your needs.
 """
+from pathlib import Path
 from typing import TYPE_CHECKING
+import json
 import trackpy as tp
 from magicgui import magic_factory
 from qtpy.QtWidgets import QVBoxLayout, QHBoxLayout,QPushButton, QCheckBox, QComboBox, QSpinBox
@@ -474,6 +476,189 @@ class IdentifyQWidget(QWidget):
         """
         d = self._parse_diameter()          # from the previous patch
         return d[-1] if isinstance(d, tuple) else d
+
+    def _points_size_from_detection(self) -> float:
+        """Napari points marker size in pixels derived from detection diameter."""
+        try:
+            diameter = float(self._diameter_scalar())
+        except Exception:
+            diameter = 5.0
+        return max(1.0, diameter * 2.0)
+
+    def _trackpy_properties(self, df, coord_cols) -> dict:
+        """Keep every trackpy output column except point coordinates."""
+        if df is None or len(df) == 0:
+            return {}
+        exclude = set(coord_cols)
+        prop_cols = [c for c in df.columns if c not in exclude]
+        return {c: df[c].to_numpy() for c in prop_cols}
+
+    def _default_identify_settings(self) -> dict:
+        return {
+            "mass_threshold": 0,
+            "diameter": "3,5,5",
+            "size_filter_enabled": False,
+            "size_cutoff": 1.6,
+            "ecc_enabled": False,
+            "ecc_cutoff": 0.35,
+        }
+
+    def _global_settings_path(self) -> Path:
+        return Path.home() / ".napari-trackpy" / "identify_last_run.json"
+
+    def _layer_source_path(self, index_layer=None):
+        if index_layer is None:
+            try:
+                index_layer = _get_choice_layer(self, self.layersbox)
+            except Exception:
+                return None
+        if index_layer is None or index_layer < 0 or index_layer >= len(self.viewer.layers):
+            return None
+
+        layer = self.viewer.layers[index_layer]
+        for src_attr in ("source", "_source"):
+            src = getattr(layer, src_attr, None)
+            p = getattr(src, "path", None)
+            if p:
+                return Path(str(p))
+
+        fallback = getattr(layer, "_filename", None)
+        if fallback:
+            return Path(str(fallback))
+        return None
+
+    def _local_settings_path(self, index_layer=None):
+        source_path = self._layer_source_path(index_layer)
+        if source_path is None:
+            return None
+        base_dir = source_path if source_path.is_dir() else source_path.parent
+        return base_dir / ".napari-trackpy.json"
+
+    def _read_settings_file(self, path):
+        if not path or not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text())
+            return payload if isinstance(payload, dict) else {}
+        except Exception as err:
+            print(f"Could not read settings file {path}: {err}")
+            return {}
+
+    def _write_settings_file(self, path, settings):
+        if not path:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(settings, indent=2, sort_keys=True))
+        except Exception as err:
+            print(f"Could not write settings file {path}: {err}")
+
+    def _batch_channel_key(self, layer_name: str) -> str:
+        return layer_name.split("::")[-1].strip()
+
+    def _selected_channel_key(self, index_layer=None):
+        if index_layer is None:
+            try:
+                index_layer = _get_choice_layer(self, self.layersbox)
+            except Exception:
+                return None
+        if index_layer is None or index_layer < 0 or index_layer >= len(self.viewer.layers):
+            return None
+        return self._batch_channel_key(self.viewer.layers[index_layer].name)
+
+    def _collect_batch_channel_settings(self) -> dict:
+        cfg = {}
+        rows = self.batch_grid_layout.rowCount()
+        for r in range(rows):
+            w_label = self.batch_grid_layout.itemAtPosition(r, 0)
+            w_spin = self.batch_grid_layout.itemAtPosition(r, 1)
+            w_tick = self.batch_grid_layout.itemAtPosition(r, 2)
+            if not (w_label and w_spin and w_tick):
+                continue
+            key = self._batch_channel_key(w_label.widget().text())
+            cfg[key] = {
+                "mass_threshold": int(w_spin.widget().value()),
+                "enabled": bool(w_tick.widget().isChecked()),
+            }
+        return cfg
+
+    def _apply_batch_channel_settings(self, batch_channels: dict):
+        rows = self.batch_grid_layout.rowCount()
+        for r in range(rows):
+            w_label = self.batch_grid_layout.itemAtPosition(r, 0)
+            w_spin = self.batch_grid_layout.itemAtPosition(r, 1)
+            w_tick = self.batch_grid_layout.itemAtPosition(r, 2)
+            if not (w_label and w_spin and w_tick):
+                continue
+            key = self._batch_channel_key(w_label.widget().text())
+            if key not in batch_channels:
+                continue
+            channel_cfg = batch_channels[key] or {}
+            if "mass_threshold" in channel_cfg:
+                w_spin.widget().setValue(int(channel_cfg["mass_threshold"]))
+            if "enabled" in channel_cfg:
+                w_tick.widget().setChecked(bool(channel_cfg["enabled"]))
+
+    def _collect_identify_settings(self, index_layer=None) -> dict:
+        batch_channels = self._collect_batch_channel_settings()
+        selected_key = self._selected_channel_key(index_layer=index_layer)
+        if selected_key:
+            batch_channels.setdefault(selected_key, {})
+            batch_channels[selected_key]["mass_threshold"] = int(self.mass_slider.value())
+        return {
+            "mass_threshold": int(self.mass_slider.value()),
+            "diameter": (self.diameter_input.text().strip() or "3,5,5"),
+            "size_filter_enabled": bool(self.size_filter_tick.isChecked()),
+            "size_cutoff": float(self.size_filter_input.value()),
+            "ecc_enabled": bool(self.ecc_tick.isChecked()),
+            "ecc_cutoff": float(self.ecc_input.value()),
+            "batch_channels": batch_channels,
+        }
+
+    def _apply_identify_settings(self, settings: dict, index_layer=None):
+        defaults = self._default_identify_settings()
+        cfg = {**defaults, **(settings or {})}
+        batch_channels = cfg.get("batch_channels", {}) or {}
+
+        mass_value = cfg["mass_threshold"]
+        selected_key = self._selected_channel_key(index_layer=index_layer)
+        if selected_key and selected_key in batch_channels:
+            channel_cfg = batch_channels[selected_key] or {}
+            if "mass_threshold" in channel_cfg:
+                mass_value = channel_cfg["mass_threshold"]
+
+        try:
+            self.mass_slider.setValue(int(mass_value))
+        except Exception:
+            self.mass_slider.setValue(defaults["mass_threshold"])
+
+        self.diameter_input.setText(str(cfg.get("diameter", defaults["diameter"])))
+
+        self.size_filter_tick.setChecked(bool(cfg.get("size_filter_enabled", defaults["size_filter_enabled"])))
+        try:
+            self.size_filter_input.setValue(float(cfg["size_cutoff"]))
+        except Exception:
+            self.size_filter_input.setValue(defaults["size_cutoff"])
+
+        self.ecc_tick.setChecked(bool(cfg.get("ecc_enabled", defaults["ecc_enabled"])))
+        try:
+            self.ecc_input.setValue(float(cfg["ecc_cutoff"]))
+        except Exception:
+            self.ecc_input.setValue(defaults["ecc_cutoff"])
+
+        self._apply_batch_channel_settings(batch_channels)
+
+    def _load_identify_settings(self, index_layer=None):
+        # Precedence: defaults < global last-run < local file beside the dataset
+        settings = dict(self._default_identify_settings())
+        settings.update(self._read_settings_file(self._global_settings_path()))
+        settings.update(self._read_settings_file(self._local_settings_path(index_layer)))
+        self._apply_identify_settings(settings, index_layer=index_layer)
+
+    def _save_identify_settings(self, index_layer=None):
+        settings = self._collect_identify_settings(index_layer=index_layer)
+        self._write_settings_file(self._global_settings_path(), settings)
+        self._write_settings_file(self._local_settings_path(index_layer), settings)
         
             
     def __init__(self, napari_viewer):
@@ -481,9 +666,9 @@ class IdentifyQWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         
-        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',border_width=0.15)
+        self.points_options = dict(face_color=[0]*4,opacity=0.75,size=10,blending='additive',border_width=0.15)
         # edge_color='red'
-        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=100,blending='additive',border_width=0.15)
+        self.points_options2 = dict(face_color=[0]*4,opacity=0.75,size=10,blending='additive',border_width=0.15)
         # ,edge_color='green'
         #comboBox for layer selection
         self.llayer = QLabel()
@@ -498,7 +683,7 @@ class IdentifyQWidget(QWidget):
         self.mass_slider = QSpinBox()
         self.mass_slider.setRange(0, int(1e6))
         self.mass_slider.setSingleStep(200)
-        self.mass_slider.setValue(25000)
+        self.mass_slider.setValue(0)
         l2 = QLabel()
         
         # l2.setText("Diameter of the particle")
@@ -516,7 +701,7 @@ class IdentifyQWidget(QWidget):
         l3.setText("Size cutoff (Select for usage)")
         self.layoutH0 = QHBoxLayout()
         self.size_filter_tick = QCheckBox()
-        self.size_filter_tick.setChecked(True)
+        self.size_filter_tick.setChecked(False)
         self.size_filter_input = QDoubleSpinBox()
         self.size_filter_input.setRange(0, 10)
         self.size_filter_input.setSingleStep(0.05)
@@ -640,7 +825,7 @@ class IdentifyQWidget(QWidget):
             batch_mass_slider = QSpinBox()
             batch_mass_slider.setRange(0, int(1e6))
             batch_mass_slider.setSingleStep(200)
-            batch_mass_slider.setValue(4000)
+            batch_mass_slider.setValue(self.mass_slider.value())
             
             batch_check_box = QCheckBox()
             batch_check_box.setChecked(True)
@@ -664,7 +849,7 @@ class IdentifyQWidget(QWidget):
         _batch_files_btn = QPushButton('Batch Identify Files')
         _batch_files_btn.clicked.connect(self._batch_files)
         self.layout().addWidget(_batch_files_btn)
-        
+        self._load_identify_settings()
 
 
     def open_file_dialog(self):
@@ -692,6 +877,8 @@ class IdentifyQWidget(QWidget):
 
 
     def _refresh_layers(self):
+        if getattr(self, "_batch_running", False):
+            return
         # update the combobox first
         current = self.layersbox.currentText()
         self.layersbox.blockSignals(True)        # avoid re‑entrancy
@@ -705,6 +892,13 @@ class IdentifyQWidget(QWidget):
 
         # now rebuild the per‑channel grid
         self._rebuild_batch_grid()
+        if getattr(self, "_batch_files_running", False):
+            frozen_cfg = getattr(self, "_batch_files_frozen_cfg", None)
+            if frozen_cfg is not None:
+                self._batch_cfg = dict(frozen_cfg)
+                self._apply_batch_config()
+        else:
+            self._load_identify_settings()
         
     # def _refresh_layers(self,_widget,_type='image'):
     #     i = _widget.currentIndex()
@@ -728,6 +922,13 @@ class IdentifyQWidget(QWidget):
         # # self.layersbox.currentIndex()
         ##should change it to name because it ignores non image layers
         print("Layer to detect:", i, self.layersbox.currentIndex())
+        if getattr(self, "_batch_running", False):
+            return
+        try:
+            index_layer = _get_choice_layer(self, self.layersbox)
+            self._load_identify_settings(index_layer=index_layer)
+        except Exception:
+            pass
         # self.llayer.setText(
         # return j
         
@@ -791,7 +992,7 @@ class IdentifyQWidget(QWidget):
         return masks
     
     # @thread_worker
-    def _on_click(self):
+    def _on_click(self, minmass_override=None):
         from .helpers_axes import infer_axes
         import trackpy as tp
         import pandas as pd
@@ -812,7 +1013,12 @@ class IdentifyQWidget(QWidget):
         layer = self.viewer.layers[index_layer]
         axes  = infer_axes(layer)         # Axes(order='tzyx', t=0, z=1, y=2, x=3)
         diam    = self._parse_diameter()
-        minmass = self.mass_slider.value() 
+        if minmass_override is not None:
+            self.mass_slider.setValue(int(minmass_override))
+            minmass = int(minmass_override)
+        else:
+            minmass = int(self.mass_slider.value())
+        self._save_identify_settings(index_layer=index_layer)
         print(axes)
         print("Axis order detected:", axes.order)
                 
@@ -841,8 +1047,14 @@ class IdentifyQWidget(QWidget):
         # ------------------------------------------------------------------
         if axes.t is not None and self.choice.isChecked():
             print(f"Time‑series detected ({axes.order}); running across frames")
-            t0, t1   = self.min_timer.value(), self.max_timer.value()
-            t_range  = range(t0, t1)
+            t0, t1 = self.min_timer.value(), self.max_timer.value()
+            max_t = max(0, int(layer.data.shape[axes.t]) - 1)
+            t0 = max(0, min(int(t0), max_t))
+            t1 = max(0, min(int(t1), max_t))
+            if t1 < t0:
+                t0, t1 = t1, t0
+            # Inclusive range to ensure the last selected frame is processed.
+            t_range = range(t0, t1 + 1)
             image_seq = (
                 [_plane2d(t_idx=t) for t in t_range]     # TYX
                 if axes.z is None
@@ -944,10 +1156,7 @@ class IdentifyQWidget(QWidget):
         elif len(self.viewer.layers[index_layer].data.shape) > 3:
             _points = self.f.loc[:,['frame','z','y','x']]
             
-        try:
-            _metadata = self.f.loc[:,['mass','size','ecc']]
-        except:
-            _metadata = self.f.loc[:,['mass','size_x','size_y','size_z']]
+        _metadata = self._trackpy_properties(self.f, _points.columns)
         #self.viewer.layers[index_layer]
         # self.viewer.layers[index_layer].colormap.name)
         #like this is opposite color of the image
@@ -970,13 +1179,15 @@ class IdentifyQWidget(QWidget):
         #     point_colors = 'yellow'
         point_colors = clr_dict[clr_name]
         if len(_points) > 0:
+            points_options = dict(self.points_options)
+            points_options["size"] = self._points_size_from_detection()
             self._points_layer = _add_points_compat(
                 self.viewer,
                 _points,
                 name="Points "+name_points,
                 properties=_metadata,
                 edge_color=point_colors,
-                **self.points_options,
+                **points_options,
             )
             self._points_layer.scale = self.viewer.layers[index_layer].scale
 
@@ -1005,28 +1216,38 @@ class IdentifyQWidget(QWidget):
         if not files:
             return
 
-        # 2) loop over files
-        for fname in files:
-            print(f"\n=== Processing {fname} ===")
-            try:
-                # Clear existing layers to avoid name clashes (optional; comment out
-                # if you prefer to keep everything in the viewer)
-                self._capture_batch_config()
-                self.viewer.layers.clear()
+        # Freeze the current batch-grid values for this multi-file run.
+        self._capture_batch_config()
+        self._batch_files_frozen_cfg = dict(getattr(self, "_batch_cfg", {}))
+        self._batch_files_running = True
+        try:
+            # 2) loop over files
+            for fname in files:
+                print(f"\n=== Processing {fname} ===")
+                try:
+                    # Clear existing layers to avoid name clashes (optional; comment out
+                    # if you prefer to keep everything in the viewer)
+                    self.viewer.layers.clear()
 
-                # Load with the napari‑aicsimageio plugin
-                self.viewer.open(fname, plugin="napari-aicsimageio")
-                
-            except Exception as err:
-                print(f"Could not open {fname}: {err}")
-                continue
+                    # Load with the napari‑aicsimageio plugin
+                    self.viewer.open(fname, plugin="napari-aicsimageio")
 
-            # 3) run channel batch identification exactly as usual
-            try:
-                self.batch_on_click()
-            except Exception as err:
-                print(f"Identify failed on {fname}: {err}")
-                continue
+                    # Re-apply frozen per-channel config after loading.
+                    self._batch_cfg = dict(self._batch_files_frozen_cfg)
+                    self._apply_batch_config()
+                except Exception as err:
+                    print(f"Could not open {fname}: {err}")
+                    continue
+
+                # 3) run channel batch identification exactly as usual
+                try:
+                    self.batch_on_click()
+                except Exception as err:
+                    print(f"Identify failed on {fname}: {err}")
+                    continue
+        finally:
+            self._batch_files_running = False
+            self._batch_files_frozen_cfg = {}
             
     def _capture_batch_config(self):
         cfg = {}
@@ -1040,7 +1261,7 @@ class IdentifyQWidget(QWidget):
             name  = w_label.widget().text()
             mass  = w_spin.widget().value()
             check = w_tick.widget().isChecked()
-            cfg[name.split("::")[-1]] = (mass, check)      # keep suffix only
+            cfg[self._batch_channel_key(name)] = (mass, check)
         self._batch_cfg = cfg                  # new attribute
 
     def _rebuild_batch_grid(self):
@@ -1062,7 +1283,7 @@ class IdentifyQWidget(QWidget):
 
             spin.setRange(0, int(1e6))
             spin.setSingleStep(200)
-            spin.setValue(3000)
+            spin.setValue(self.mass_slider.value())
             tick.setChecked(True)
 
             self.batch_grid_layout.addWidget(label, k, 0)
@@ -1078,7 +1299,7 @@ class IdentifyQWidget(QWidget):
             w_label = self.batch_grid_layout.itemAtPosition(r, 0)
             if not w_label:
                 continue                                   # <-- guard
-            key = w_label.widget().text().split("::")[-1]
+            key = self._batch_channel_key(w_label.widget().text())
             if key not in cfg:
                 continue
             mass, checked = cfg[key]
@@ -1090,25 +1311,34 @@ class IdentifyQWidget(QWidget):
 
     def batch_on_click(self):
         print(self.batch_grid_layout.count())
-        
+
+        # Snapshot selections first so UI updates/signals cannot mutate values
+        # mid-run.
+        selected_rows = []
         for i in range(self.layersbox.count()):
-        #if index is checked, get the check from the grid self:
-            if self.batch_grid_layout.itemAt(i*3+2).widget().isChecked():
-                #update selection to match
-                self.layersbox.setCurrentIndex(i)
-                #update mass value get the value from grid
-                self.mass_slider.setValue(
-                    #no idea how to do this
-                    #example
-                    self.batch_grid_layout.itemAt(i*3+1).widget().value()
-                                          )
-                self._on_click()
+            tick_item = self.batch_grid_layout.itemAtPosition(i, 2)
+            mass_item = self.batch_grid_layout.itemAtPosition(i, 1)
+            if not tick_item or not mass_item:
+                continue
+            if tick_item.widget().isChecked():
+                selected_rows.append((i, int(mass_item.widget().value())))
+
+        self._batch_running = True
+        try:
+            for row_idx, mass_value in selected_rows:
+                self.layersbox.setCurrentIndex(row_idx)
+                self.mass_slider.setValue(mass_value)
+                self._on_click(minmass_override=mass_value)
+        finally:
+            self._batch_running = False
+            self._refresh_layers()
             
 
 
     # @thread_worker
     def _on_click2(self):
         index_layer = _get_choice_layer(self,self.layersbox)
+        self._save_identify_settings(index_layer=index_layer)
         # print("napari has", len(self.viewer.layers), "layers")
         # f = tp.locate(self.viewer.layers[2].data,5,minmass=500)
         f2 = self.f
@@ -1130,17 +1360,16 @@ class IdentifyQWidget(QWidget):
                 _points = f2.loc[:,['frame','z','y','x']]
             else: 
                 _points = f2.loc[:,['frame','y','x']]
-        try:
-            _metadata = f2.loc[:,['mass','size','ecc']]
-        except:
-            _metadata = f2.loc[:,['mass','size']]
+        _metadata = self._trackpy_properties(f2, _points.columns)
 
         self.f2 = f2
+        points_options2 = dict(self.points_options2)
+        points_options2["size"] = self._points_size_from_detection()
         self._points_layer_filter = _add_points_compat(
             self.viewer,
             _points,
             properties=_metadata,
-            **self.points_options2,
+            **points_options2,
         )
         self._points_layer_filter.scale = self.viewer.layers[index_layer].scale
 
@@ -1347,7 +1576,8 @@ class ColocalizationQWidget(QWidget):
         file_browse = QPushButton('Browse')
         file_browse.clicked.connect(self.open_file_dialog)
         self.filename_edit = QLineEdit()
-        # self.filename_edit.setText(_get_open_filename(self)+"_Spots_Coloc.csv")
+        self._filename_user_set = False
+        self.filename_edit.textEdited.connect(self._on_filename_edited)
         self.filename_edit.setText("Spots_Coloc.csv")
         grid_layout = QGridLayout()
         grid_layout.addWidget(QLabel('File:'), 0, 0)
@@ -1379,6 +1609,7 @@ class ColocalizationQWidget(QWidget):
         self._plt = pg.plot()
         self.layout().addWidget(self._plt)
         self._refresh_layers()
+        self._set_default_output_filename()
 
     def _points_layers_for_coloc(self):
         from napari.layers import Points
@@ -1392,6 +1623,29 @@ class ColocalizationQWidget(QWidget):
             if layer.name == layer_name:
                 return layer
         raise ValueError(f"No valid Points layer selected for '{layer_name}'")
+
+    def _coloc_points_size(self) -> float:
+        """Use the selected anchor points marker size for generated coloc points."""
+        try:
+            layer = self._get_selected_points_layer(self.points_anchor)
+        except Exception:
+            return 10.0
+
+        current_size = getattr(layer, "current_size", None)
+        if current_size is not None:
+            try:
+                return float(current_size)
+            except Exception:
+                pass
+
+        size = getattr(layer, "size", None)
+        if size is None:
+            return 10.0
+
+        size_array = np.asarray(size)
+        if size_array.size == 0:
+            return 10.0
+        return float(size_array.ravel()[0])
 
     def _refresh_layers(self, event=None):
         anchor_current = self.points_anchor.currentText()
@@ -1416,28 +1670,202 @@ class ColocalizationQWidget(QWidget):
             next_idx = (self.points_anchor.currentIndex() + 1) % self.points_question.count()
             self.points_question.setCurrentIndex(next_idx)
 
-    def _save_results(self):
-        import pandas as pd
-        ##TODO
-        ##pull from points layer see example below
-        if self.viewer.layers.selection.active._type_string == 'points':
-            _index_layer = self.viewer.layers.selection.active
-            # df = _get_points(self)
-             #manbearpig   
-        # self.viewer.layers[0].data
-        #need to make this smarter, if the layers are shuffled it breaks.
-            
-            if _index_layer.data.shape[1] < 3:
-                df = pd.DataFrame(_index_layer.data, columns = ['frame','y','x'])
-                print("2D",df)
-            elif _index_layer.data.shape[1] >= 3:
-                df = pd.DataFrame(_index_layer.data, columns = ['frame','z','y','x'])
-                print("3D",df)
+        self._set_default_output_filename()
 
-            # b = self.viewer.layers.selection.active.properties
-# self.filename_edit
-            _save_name = self.viewer.layers.selection.active.name
-            df.to_csv(self.filename_edit.text().strip(".csv")+"_"+_save_name+".csv")
+    def _layer_file_path(self, layer):
+        for src_attr in ("source", "_source"):
+            src = getattr(layer, src_attr, None)
+            path = getattr(src, "path", None)
+            if path:
+                return Path(str(path))
+        fallback = getattr(layer, "_filename", None)
+        if fallback:
+            return Path(str(fallback))
+        return None
+
+    def _on_filename_edited(self, _text):
+        self._filename_user_set = True
+
+    def _default_output_path(self):
+        out_dir = self._output_directory()
+
+        image_source = None
+        for layer in self.viewer.layers:
+            if layer._type_string == "image":
+                image_source = self._layer_file_path(layer)
+                if image_source is not None:
+                    break
+
+        if image_source is None:
+            try:
+                anchor_layer = self._get_selected_points_layer(self.points_anchor)
+                image_source = self._layer_file_path(anchor_layer)
+            except Exception:
+                image_source = None
+
+        stem = image_source.stem if image_source is not None else "unknown_file"
+        return out_dir / f"{stem}_Spots_Coloc.csv"
+
+    def _set_default_output_filename(self, force=False):
+        if force or not getattr(self, "_filename_user_set", False):
+            self.filename_edit.setText(str(self._default_output_path()))
+
+    def _output_directory(self):
+        try:
+            anchor_layer = self._get_selected_points_layer(self.points_anchor)
+            source_path = self._layer_file_path(anchor_layer)
+            if source_path is not None:
+                return source_path if source_path.is_dir() else source_path.parent
+        except Exception:
+            pass
+
+        for layer in self.viewer.layers:
+            if layer._type_string != "image":
+                continue
+            source_path = self._layer_file_path(layer)
+            if source_path is not None:
+                return source_path if source_path.is_dir() else source_path.parent
+
+        return Path.cwd()
+
+    def _spots_output_path(self):
+        raw = (self.filename_edit.text() or "").strip()
+        if not raw:
+            return self._default_output_path()
+        path = Path(raw)
+        if not path.is_absolute():
+            path = self._output_directory() / path
+        return path
+
+    def _master_stats_path(self):
+        return self._output_directory() / "colocalization_master.csv"
+
+    def _points_dataframe(self, layer):
+        import pandas as pd
+
+        points = np.asarray(layer.data)
+        ndim = points.shape[1] if points.ndim == 2 else 3
+        coord_cols = ['frame', 'z', 'y', 'x'] if ndim >= 4 else ['frame', 'y', 'x']
+        df = pd.DataFrame(points, columns=coord_cols)
+
+        props = getattr(layer, "properties", {}) or {}
+        for key, values in props.items():
+            try:
+                if len(values) == len(df):
+                    df[key] = values
+            except Exception:
+                continue
+
+        return df
+
+    def _coords_view(self, df):
+        coord_cols = ['frame', 'z', 'y', 'x'] if 'z' in df.columns else ['frame', 'y', 'x']
+        return coord_cols, df[coord_cols].dropna()
+
+    def _append_stats_rows(self, rows):
+        import pandas as pd
+
+        if not rows:
+            return
+        path = self._master_stats_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df = pd.DataFrame(rows)
+        df.to_csv(path, mode='a', header=not path.exists(), index=False)
+
+    def _run_colocalization(self, anchor_layer, question_layer):
+        from sklearn.neighbors import KDTree
+
+        anchor_name = anchor_layer.name
+        question_name = question_layer.name
+        anchor_df = self._points_dataframe(anchor_layer)
+        question_df = self._points_dataframe(question_layer)
+        anchor_cols, anchor_coords = self._coords_view(anchor_df)
+        _, question_coords = self._coords_view(question_df)
+
+        if anchor_coords.empty or question_coords.empty:
+            print("Selected points layer has no points.")
+            return None
+        if anchor_coords.shape[1] != question_coords.shape[1]:
+            print("Anchor and comparison points have different dimensionality.")
+            return None
+
+        tree = KDTree(question_coords.to_numpy(), leaf_size=1)
+        distances_list = tree.query(anchor_coords.to_numpy())[0].ravel()
+        hist, bins = np.histogram(distances_list, bins=100)
+        self._plt.plot(
+            bins[:-1],
+            hist,
+            pen=(np.random.randint(16), 16),
+            name='green',
+        )
+
+        mask = distances_list < self.euc_distance.value()
+        coloc_indices = anchor_coords.index[mask]
+        colocalizing_points = anchor_coords.to_numpy()[mask]
+        coloc_name = f"Coloc_{question_name}_in_{anchor_name}"
+
+        coloc_points = _add_points_compat(
+            self.viewer,
+            colocalizing_points,
+            opacity=0.31,
+            size=self._coloc_points_size(),
+            blending='additive',
+            border_width=0.15,
+            symbol='square',
+            name=coloc_name,
+        )
+        coloc_points.scale = anchor_layer.scale
+
+        anchor_count = len(anchor_coords)
+        question_count = len(question_coords)
+        coloc_count = int(mask.sum())
+        ratio = (coloc_count / anchor_count) if anchor_count else 0.0
+        stats = {
+            "anchor_layer": anchor_name,
+            "comparison_layer": question_name,
+            "anchor_particles": anchor_count,
+            "comparison_particles": question_count,
+            "colocalized_particles": coloc_count,
+            "colocalized_percent_anchor": ratio * 100.0,
+            "distance_threshold": float(self.euc_distance.value()),
+            "spots_output_file": str(self._spots_output_path()),
+        }
+
+        label = QLabel(
+            f"Number of colocalizing in {coloc_name}: "
+            f"{anchor_count} {coloc_count} {ratio:.4f}"
+        )
+        self.layout().addWidget(label)
+
+        column_name = f"colocalized {question_name} to {anchor_name}"
+        df_out = anchor_df.copy()
+        df_out[column_name] = 0
+        df_out.loc[coloc_indices, column_name] = 1
+
+        return {
+            "stats": stats,
+            "column_name": column_name,
+            "spots_df": df_out,
+            "coloc_indices": coloc_indices,
+            "colocalizing_points": colocalizing_points,
+        }
+
+    def _save_results(self):
+        if hasattr(self, "_latest_coloc_df") and self._latest_coloc_df is not None:
+            path = self._spots_output_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._latest_coloc_df.to_csv(path, index=False)
+            print(f"Saved colocalization spots file: {path}")
+            return
+
+        # Fallback: save selected points layer if no colocalization dataframe exists.
+        if self.viewer.layers.selection.active._type_string == 'points':
+            layer = self.viewer.layers.selection.active
+            df = self._points_dataframe(layer)
+            out = self._spots_output_path()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(out, index=False)
+            print(f"Saved selected points file: {out}")
 
 
 
@@ -1451,138 +1879,64 @@ class ColocalizationQWidget(QWidget):
         )
         if filename:
             path = Path(filename)
+            self._filename_user_set = True
             self.filename_edit.setText(str(path))
     
 
     def calculate_colocalizing(self):
-        #makecode from notebooks
-        import scipy
-        import pyqtgraph as pg
-        from sklearn.neighbors import KDTree
         print("Doing Colocalization")
         if self.points_anchor.count() == 0 or self.points_question.count() == 0:
             print("No points layers available for colocalization.")
             return
 
-        QuestionPOS = self._get_points(self.points_question)
-        #print(QuestionPOS)
-        AnchorPOS = self._get_points(self.points_anchor)
-        #print(AnchorPOS)
-        if QuestionPOS.size == 0 or AnchorPOS.size == 0:
-            print("Selected Spots layer has no points.")
+        anchor_layer = self._get_selected_points_layer(self.points_anchor)
+        question_layer = self._get_selected_points_layer(self.points_question)
+        result = self._run_colocalization(anchor_layer, question_layer)
+        if result is None:
             return
 
-        #scipy way
-        # question_kd = scipy.spatial.cKDTree(QuestionPOS,
-        # leafsize=10000.
-        # # leafsize=0.
-        # )
-        # distances_list = np.asarray(question_kd.query(AnchorPOS,p=2,
-        #         #distance_upper_bound=10*psize
-        #         ))[0]
-        
-        #scikitlearn
-        
-        tree = KDTree(QuestionPOS, leaf_size=1)
-        distances_list = tree.query(AnchorPOS)[0].ravel()
-        _hist,_bins = np.histogram(distances_list,bins=100)
-        # _plt.showGrid(x=True, y=True)()
-        print(distances_list,_bins,_hist)
-        
-        # try:
-        #     idx   = int(np.random.randint(16))   # cast NumPy scalar → builtin int
-        #     cycle = 16                           # already a plain int
-        #     line1 = self._plt.plot(
-        #         _bins[:-1], _hist, 
-        #         pen=(idx, cycle),  
-        #         name="green"
-        #         )    
-        # except: print("pyqtgraph failed")
-        
-        line1 = self._plt.plot(
-            _bins[:-1],_hist,
-            #   distances_list, 
-            # pen=pg.mkPen(pg.intColor(np.random.randint(16), 16)),
-            pen=(np.random.randint(16), 16),
-            # pen='r'
-            # pen=self.points_question.colormap.name
-            #   symbol='x', symbolPen='g',
-            #   symbolBrush=0.2, 
-            name='green'
-            )
- 
-        # self._plt.setImage(distances_list
-        #               , xvals=np.linspace(0., 100., distances_list.shape[0]))
-        mask = distances_list < self.euc_distance.value()
-        _colocalizing = distances_list[mask]
-        #
-        #Is this faster than above?
-        #print(tree.query_radius(AnchorPOS, r=self.euc_distance.value(), count_only=True))
-        #ind = tree.query_radius(AnchorPOS, r=self.euc_distance.value()) 
-        
-        
-        _colocalizing_points = AnchorPOS[mask]
-        print("Remove me:",_colocalizing_points.shape,QuestionPOS.shape)
-        
-        coloc_name = "Coloc_"+self.points_question.currentText()+'_in_'+self.points_anchor.currentText()
-        coloc_points = _add_points_compat(
-            self.viewer,
-            _colocalizing_points,
-            opacity=0.31,
-            size=150,
-            blending='additive',
-            border_width=0.15,
-            symbol='square',
-            name=coloc_name,
-        )
-        coloc_points.scale = self._get_selected_points_layer(self.points_anchor).scale
-        
-        l_coloc = QLabel("Number of colocalizing in "+coloc_name+":"+str(
-            len(AnchorPOS))+" "+str(
-            len(_colocalizing))+" "+str(
-                    len(_colocalizing)/len(AnchorPOS)))
-        self.layout().addWidget(l_coloc)
+        self._colocalizing_points = result["colocalizing_points"]
+        self._latest_coloc_df = result["spots_df"]
+        self._latest_stats_rows = [result["stats"]]
+        self._append_stats_rows(self._latest_stats_rows)
 
-
-        self._colocalizing_points = _colocalizing_points
         if self.auto_save.isChecked():
-            self.filename_edit.setText(_get_open_filename(
-                    self)+'_'+coloc_name+"_Spots.csv")
             self._save_results()
 
-        # return {coloc_name:[AnchorPOS,_colocalizing])}
-        # return spots count Filename what channel is anchor which is question and numbers?
-        #save directly to a file that is all.csv or file_coloc_counts.csv?
-
     def calculate_all_colocalizing(self):
-        idx_anchor = self.points_anchor.currentIndex()
-        _num_items = self.points_question.count()
-        self.points_question.setCurrentIndex(0)
-        for i in range(_num_items):
-            if self.points_question.currentIndex() == idx_anchor:
-                if self.points_question.currentIndex() < _num_items-1:
-                    self.points_question.setCurrentIndex(
-                        self.points_question.currentIndex()+1)
-            else:
-                self.calculate_colocalizing()
-                if self.points_question.currentIndex() < _num_items-1:
-                    self.points_question.setCurrentIndex(
-                        self.points_question.currentIndex()+1)
+        if self.points_anchor.count() == 0 or self.points_question.count() == 0:
+            print("No points layers available for colocalization.")
+            return
 
-        #fortripple coloc
-        #if the anchor is the last item, it will not work because it will compare to itself.
-        #fix ASAP
-        if _num_items == 3:
-        #then set anchor to the first result (anchor plus first available) 
-            #0 index so +1 is not needed
-            self.points_anchor.setCurrentIndex(_num_items)
-            if self.points_question.currentIndex() == idx_anchor:
-                self.points_question.setCurrentIndex(
-                    self.points_question.currentIndex()-1)
-        # and compare to the other that was not anchor in the beggining
-            #normally the points_question was already in the last
-            #point_list that is not the anchor, so it should be ready to go
-            self.calculate_colocalizing()
+        anchor_idx = self.points_anchor.currentIndex()
+        anchor_layer = self._get_selected_points_layer(self.points_anchor)
+        final_df = self._points_dataframe(anchor_layer).copy()
+        stats_rows = []
+
+        for i in range(self.points_question.count()):
+            if i == anchor_idx:
+                continue
+            self.points_question.setCurrentIndex(i)
+            question_layer = self._get_selected_points_layer(self.points_question)
+            result = self._run_colocalization(anchor_layer, question_layer)
+            if result is None:
+                continue
+
+            col_name = result["column_name"]
+            final_df[col_name] = 0
+            final_df.loc[result["coloc_indices"], col_name] = 1
+            stats_rows.append(result["stats"])
+
+        if not stats_rows:
+            print("No valid comparisons were generated.")
+            return
+
+        self._latest_coloc_df = final_df
+        self._latest_stats_rows = stats_rows
+        self._append_stats_rows(stats_rows)
+
+        if self.auto_save.isChecked():
+            self._save_results()
     
     # def _select_layer(self,i):
     #     ##needs to be by name
@@ -1592,18 +1946,7 @@ class ColocalizationQWidget(QWidget):
 
     
     def _get_points(self,_widget):
-        import pandas as pd
-
         layer = self._get_selected_points_layer(_widget)
-        points = np.asarray(layer.data)
-        if points.size == 0:
-            return points
-
-        if points.shape[1] < 3:
-            df = pd.DataFrame(points, columns=['frame', 'y', 'x']).dropna()
-            print("2D", df)
-        else:
-            df = pd.DataFrame(points, columns=['frame', 'z', 'y', 'x']).dropna()
-            print("3D", df)
-
-        return df.to_numpy()
+        df = self._points_dataframe(layer)
+        _, coords = self._coords_view(df)
+        return coords.to_numpy()
