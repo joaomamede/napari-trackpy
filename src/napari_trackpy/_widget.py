@@ -12,7 +12,18 @@ import json
 from magicgui import magic_factory
 from qtpy.QtWidgets import QVBoxLayout, QHBoxLayout,QPushButton, QCheckBox, QComboBox, QSpinBox
 from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget, QGridLayout
-from qtpy.QtWidgets import QSpacerItem, QSizePolicy, QFileDialog, QLineEdit
+from qtpy.QtWidgets import (
+    QSpacerItem,
+    QSizePolicy,
+    QFileDialog,
+    QLineEdit,
+    QDialog,
+    QMessageBox,
+    QStyle,
+    QProgressBar,
+    QPlainTextEdit,
+    QApplication,
+)
 from napari.qt.threading import thread_worker
 import numpy as np
 
@@ -546,14 +557,35 @@ class IdentifyQWidget(QWidget):
         prop_cols = [c for c in df.columns if c not in exclude]
         return {c: df[c].to_numpy() for c in prop_cols}
 
+    def _apply_bounds_filter(self, df, cols, min_enabled, min_value, max_enabled, max_value):
+        if not min_enabled and not max_enabled:
+            return df
+        if isinstance(cols, str):
+            cols = [cols]
+        cols = [c for c in cols if c in df.columns]
+        if not cols:
+            return df
+
+        values = df[cols]
+        mask = np.ones(len(df), dtype=bool)
+        if min_enabled:
+            mask &= (values >= float(min_value)).all(axis=1)
+        if max_enabled:
+            mask &= (values <= float(max_value)).all(axis=1)
+        return df[mask]
+
     def _default_identify_settings(self) -> dict:
         return {
             "mass_threshold": 0,
             "diameter": "3,5,5",
-            "size_filter_enabled": False,
-            "size_cutoff": 1.6,
-            "ecc_enabled": False,
-            "ecc_cutoff": 0.35,
+            "size_min_enabled": False,
+            "size_min": 0.0,
+            "size_max_enabled": False,
+            "size_max": 1.6,
+            "ecc_min_enabled": False,
+            "ecc_min": 0.0,
+            "ecc_max_enabled": False,
+            "ecc_max": 0.35,
         }
 
     def _global_settings_path(self) -> Path:
@@ -658,13 +690,26 @@ class IdentifyQWidget(QWidget):
         if selected_key:
             batch_channels.setdefault(selected_key, {})
             batch_channels[selected_key]["mass_threshold"] = int(self.mass_slider.value())
+        size_max_enabled = bool(self.size_max_tick.isChecked())
+        size_max = float(self.size_max_input.value())
+        ecc_max_enabled = bool(self.ecc_max_tick.isChecked())
+        ecc_max = float(self.ecc_max_input.value())
         return {
             "mass_threshold": int(self.mass_slider.value()),
             "diameter": (self.diameter_input.text().strip() or "3,5,5"),
-            "size_filter_enabled": bool(self.size_filter_tick.isChecked()),
-            "size_cutoff": float(self.size_filter_input.value()),
-            "ecc_enabled": bool(self.ecc_tick.isChecked()),
-            "ecc_cutoff": float(self.ecc_input.value()),
+            "size_min_enabled": bool(self.size_min_tick.isChecked()),
+            "size_min": float(self.size_min_input.value()),
+            "size_max_enabled": size_max_enabled,
+            "size_max": size_max,
+            "ecc_min_enabled": bool(self.ecc_min_tick.isChecked()),
+            "ecc_min": float(self.ecc_min_input.value()),
+            "ecc_max_enabled": ecc_max_enabled,
+            "ecc_max": ecc_max,
+            # Backward-compatible keys for older persisted settings readers.
+            "size_filter_enabled": size_max_enabled,
+            "size_cutoff": size_max,
+            "ecc_enabled": ecc_max_enabled,
+            "ecc_cutoff": ecc_max,
             "batch_channels": batch_channels,
         }
 
@@ -687,17 +732,37 @@ class IdentifyQWidget(QWidget):
 
         self.diameter_input.setText(str(cfg.get("diameter", defaults["diameter"])))
 
-        self.size_filter_tick.setChecked(bool(cfg.get("size_filter_enabled", defaults["size_filter_enabled"])))
-        try:
-            self.size_filter_input.setValue(float(cfg["size_cutoff"]))
-        except Exception:
-            self.size_filter_input.setValue(defaults["size_cutoff"])
+        size_min_enabled = bool(cfg.get("size_min_enabled", defaults["size_min_enabled"]))
+        size_min = cfg.get("size_min", defaults["size_min"])
+        size_max_enabled = bool(cfg.get("size_max_enabled", cfg.get("size_filter_enabled", defaults["size_max_enabled"])))
+        size_max = cfg.get("size_max", cfg.get("size_cutoff", defaults["size_max"]))
 
-        self.ecc_tick.setChecked(bool(cfg.get("ecc_enabled", defaults["ecc_enabled"])))
+        self.size_min_tick.setChecked(size_min_enabled)
+        self.size_max_tick.setChecked(size_max_enabled)
         try:
-            self.ecc_input.setValue(float(cfg["ecc_cutoff"]))
+            self.size_min_input.setValue(float(size_min))
         except Exception:
-            self.ecc_input.setValue(defaults["ecc_cutoff"])
+            self.size_min_input.setValue(defaults["size_min"])
+        try:
+            self.size_max_input.setValue(float(size_max))
+        except Exception:
+            self.size_max_input.setValue(defaults["size_max"])
+
+        ecc_min_enabled = bool(cfg.get("ecc_min_enabled", defaults["ecc_min_enabled"]))
+        ecc_min = cfg.get("ecc_min", defaults["ecc_min"])
+        ecc_max_enabled = bool(cfg.get("ecc_max_enabled", cfg.get("ecc_enabled", defaults["ecc_max_enabled"])))
+        ecc_max = cfg.get("ecc_max", cfg.get("ecc_cutoff", defaults["ecc_max"]))
+
+        self.ecc_min_tick.setChecked(ecc_min_enabled)
+        self.ecc_max_tick.setChecked(ecc_max_enabled)
+        try:
+            self.ecc_min_input.setValue(float(ecc_min))
+        except Exception:
+            self.ecc_min_input.setValue(defaults["ecc_min"])
+        try:
+            self.ecc_max_input.setValue(float(ecc_max))
+        except Exception:
+            self.ecc_max_input.setValue(defaults["ecc_max"])
 
         self._apply_batch_channel_settings(batch_channels)
 
@@ -712,6 +777,115 @@ class IdentifyQWidget(QWidget):
         settings = self._collect_identify_settings(index_layer=index_layer)
         self._write_settings_file(self._global_settings_path(), settings)
         self._write_settings_file(self._local_settings_path(index_layer), settings)
+
+    def _default_ipcluster_cores(self):
+        import os
+
+        total = max(1, int(os.cpu_count() or 1))
+        return max(1, total - 2), total
+
+    def _make_batch_progress_dialog(self, total_steps):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Batch Processing Progress")
+        dlg.setModal(False)
+        layout = QVBoxLayout(dlg)
+
+        dlg.file_label = QLabel("File: -", dlg)
+        dlg.stage_label = QLabel("Status: waiting", dlg)
+        dlg.progress_bar = QProgressBar(dlg)
+        dlg.progress_bar.setRange(0, max(1, int(total_steps)))
+        dlg.progress_bar.setValue(0)
+        dlg.progress_bar.setFormat("%p%")
+        dlg.progress_bar.setStyleSheet(
+            "QProgressBar {height: 16px; text-align: center;} "
+            "QProgressBar::chunk {background-color: #3b82f6;}"
+        )
+        dlg.log_box = QPlainTextEdit(dlg)
+        dlg.log_box.setReadOnly(True)
+        dlg.log_box.setMinimumHeight(140)
+        dlg.close_btn = QPushButton("Close", dlg)
+        dlg.close_btn.setEnabled(False)
+        dlg.close_btn.clicked.connect(dlg.close)
+
+        layout.addWidget(dlg.file_label)
+        layout.addWidget(dlg.stage_label)
+        layout.addWidget(dlg.progress_bar)
+        layout.addWidget(dlg.log_box)
+        layout.addWidget(dlg.close_btn)
+        dlg.resize(560, 300)
+        dlg.show()
+        QApplication.processEvents()
+        return dlg
+
+    def _batch_progress_update(
+        self,
+        dlg,
+        completed_steps,
+        total_steps,
+        file_path,
+        stage_text,
+        log_message=None,
+    ):
+        if dlg is None:
+            return
+        total_steps = max(1, int(total_steps))
+        completed_steps = max(0, min(int(completed_steps), total_steps))
+        dlg.progress_bar.setRange(0, total_steps)
+        dlg.progress_bar.setValue(completed_steps)
+        dlg.file_label.setText(f"File: {Path(str(file_path)).name if file_path else '-'}")
+        dlg.stage_label.setText(f"Status: {stage_text}")
+        if log_message:
+            dlg.log_box.appendPlainText(str(log_message))
+        QApplication.processEvents()
+
+    def _start_ipcluster_dialog(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("ipcluster") is None:
+            QMessageBox.warning(self, "ipcluster", "Could not find 'ipcluster' in PATH.")
+            return
+
+        default_cores, max_cores = self._default_ipcluster_cores()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Start ipcluster")
+        layout = QVBoxLayout(dlg)
+
+        grid = QGridLayout()
+        n_cores = QSpinBox(dlg)
+        n_cores.setRange(1, max_cores)
+        n_cores.setValue(default_cores)
+        grid.addWidget(QLabel("Number of engines"), 0, 0)
+        grid.addWidget(n_cores, 0, 1)
+        layout.addLayout(grid)
+
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("OK", dlg)
+        cancel_btn = QPushButton("Cancel", dlg)
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        cmd = ["ipcluster", "start", "-n", str(int(n_cores.value()))]
+        try:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            QMessageBox.information(
+                self,
+                "ipcluster",
+                f"Started ipcluster with {int(n_cores.value())} engines in background.",
+            )
+        except Exception as err:
+            QMessageBox.warning(self, "ipcluster", f"Could not start ipcluster: {err}")
         
             
     def __init__(self, napari_viewer):
@@ -751,28 +925,44 @@ class IdentifyQWidget(QWidget):
         self.diameter_input.setText("3,5,5")        
         
         l3 = QLabel()
-        l3.setText("Size cutoff (Select for usage)")
+        l3.setText("Size filter (optional min/max)")
         self.layoutH0 = QHBoxLayout()
-        self.size_filter_tick = QCheckBox()
-        self.size_filter_tick.setChecked(False)
-        self.size_filter_input = QDoubleSpinBox()
-        self.size_filter_input.setRange(0, 10)
-        self.size_filter_input.setSingleStep(0.05)
-        self.size_filter_input.setValue(1.60)
-        self.layoutH0.addWidget(self.size_filter_tick)
-        self.layoutH0.addWidget(self.size_filter_input)
+        self.size_min_tick = QCheckBox(">= ")
+        self.size_min_tick.setChecked(False)
+        self.size_min_input = QDoubleSpinBox()
+        self.size_min_input.setRange(0, 10)
+        self.size_min_input.setSingleStep(0.05)
+        self.size_min_input.setValue(0.00)
+        self.size_max_tick = QCheckBox("<= ")
+        self.size_max_tick.setChecked(False)
+        self.size_max_input = QDoubleSpinBox()
+        self.size_max_input.setRange(0, 10)
+        self.size_max_input.setSingleStep(0.05)
+        self.size_max_input.setValue(1.60)
+        self.layoutH0.addWidget(self.size_min_tick)
+        self.layoutH0.addWidget(self.size_min_input)
+        self.layoutH0.addWidget(self.size_max_tick)
+        self.layoutH0.addWidget(self.size_max_input)
 
         l4 = QLabel()
-        l4.setText("Eccentricity cutoff (Select for usage)")
+        l4.setText("Eccentricity filter (optional min/max)")
         self.layoutH0p = QHBoxLayout()
-        self.ecc_tick = QCheckBox()
-        self.ecc_tick.setChecked(False)
-        self.ecc_input = QDoubleSpinBox()
-        self.ecc_input.setRange(0, 2)
-        self.ecc_input.setSingleStep(0.05)
-        self.ecc_input.setValue(0.35)
-        self.layoutH0p.addWidget(self.ecc_tick)
-        self.layoutH0p.addWidget(self.ecc_input)
+        self.ecc_min_tick = QCheckBox(">= ")
+        self.ecc_min_tick.setChecked(False)
+        self.ecc_min_input = QDoubleSpinBox()
+        self.ecc_min_input.setRange(0, 2)
+        self.ecc_min_input.setSingleStep(0.05)
+        self.ecc_min_input.setValue(0.00)
+        self.ecc_max_tick = QCheckBox("<= ")
+        self.ecc_max_tick.setChecked(False)
+        self.ecc_max_input = QDoubleSpinBox()
+        self.ecc_max_input.setRange(0, 2)
+        self.ecc_max_input.setSingleStep(0.05)
+        self.ecc_max_input.setValue(0.35)
+        self.layoutH0p.addWidget(self.ecc_min_tick)
+        self.layoutH0p.addWidget(self.ecc_min_input)
+        self.layoutH0p.addWidget(self.ecc_max_tick)
+        self.layoutH0p.addWidget(self.ecc_max_input)
 
 
         self.layoutH1 = QHBoxLayout()
@@ -799,6 +989,9 @@ class IdentifyQWidget(QWidget):
         self.layoutH2.addWidget(l_max_time)
         self.layoutH2.addWidget(self.max_timer)
 
+        self.ipcluster_btn = QPushButton("Start ipcluster")
+        self.ipcluster_btn.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+        self.ipcluster_btn.clicked.connect(self._start_ipcluster_dialog)
 
         label_masks = QLabel()
         label_masks.setText("Make Masks?")
@@ -837,6 +1030,7 @@ class IdentifyQWidget(QWidget):
         self.layout().addLayout(self.layoutH0p)
         self.layout().addLayout(self.layoutH1)
         self.layout().addLayout(self.layoutH2)
+        self.layout().addWidget(self.ipcluster_btn)
         self.layout().addLayout(self.layout_masks)
         self.layout().addWidget(btn)
         self.layout().addWidget(self.btn2)
@@ -899,6 +1093,17 @@ class IdentifyQWidget(QWidget):
         self.layout().addWidget(_batch_btn)
 
         # NEW — batch across multiple files
+        self.batch_files_run_coloc = QCheckBox("Also run colocalization after identify")
+        self.batch_files_run_coloc.setChecked(False)
+        self.layout().addWidget(self.batch_files_run_coloc)
+
+        self._batch_coloc_cfg = {
+            "distance": 5.0,
+            "anchor_suffix": None,
+            "question_suffix": None,
+            "run_all_to_anchor": False,
+        }
+
         _batch_files_btn = QPushButton('Batch Identify Files')
         _batch_files_btn.clicked.connect(self._batch_files)
         self.layout().addWidget(_batch_files_btn)
@@ -1187,25 +1392,35 @@ class IdentifyQWidget(QWidget):
             self.f = tp.locate(img2d, diam, minmass=minmass, engine="numba")
             self.f["frame"] = 0
         
-        #filtering steps
-        if len(self.viewer.layers[index_layer].data.shape) <= 3:
-            if self.ecc_tick.isChecked():
-                    self.f = self.f[ (self.f['ecc'] < self.ecc_input.value())
-                    ]
-        if self.size_filter_tick.isChecked():
-            cutoff = self.size_filter_input.value()
-
-            if "size" in self.f.columns:                      # isotropic case
-                self.f = self.f[self.f["size"] < cutoff]
-
-            else:                                             # anisotropic columns
-                # pick the axes you care about
-                axes = [c for c in ("size_x", "size_y") if c in self.f.columns]
-
-                if axes:                                      # protect against typos
-                    mask = (self.f[axes] < cutoff).all(axis=1)
-                    self.f = self.f[mask]
-                # if neither size_x nor size_y exists, do nothing (or raise an error)
+        # filtering steps
+        if len(self.viewer.layers[index_layer].data.shape) <= 3 and "ecc" in self.f.columns:
+            self.f = self._apply_bounds_filter(
+                self.f,
+                "ecc",
+                self.ecc_min_tick.isChecked(),
+                self.ecc_min_input.value(),
+                self.ecc_max_tick.isChecked(),
+                self.ecc_max_input.value(),
+            )
+        if "size" in self.f.columns:
+            self.f = self._apply_bounds_filter(
+                self.f,
+                "size",
+                self.size_min_tick.isChecked(),
+                self.size_min_input.value(),
+                self.size_max_tick.isChecked(),
+                self.size_max_input.value(),
+            )
+        else:
+            axes = [c for c in ("size_x", "size_y", "size_z") if c in self.f.columns]
+            self.f = self._apply_bounds_filter(
+                self.f,
+                axes,
+                self.size_min_tick.isChecked(),
+                self.size_min_input.value(),
+                self.size_max_tick.isChecked(),
+                self.size_max_input.value(),
+            )
                 
         #transforming data to pandas ready for spots
         if len(self.viewer.layers[index_layer].data.shape) <= 3:
@@ -1281,6 +1496,25 @@ class IdentifyQWidget(QWidget):
         if not files:
             return
 
+        coloc_cfg = None
+        coloc_widget = None
+        if self.batch_files_run_coloc.isChecked():
+            coloc_cfg = self._configure_batch_colocalization()
+            if coloc_cfg is None:
+                print("Batch colocalization canceled.")
+                return
+            coloc_widget = ColocalizationQWidget(self.viewer)
+            coloc_widget.auto_save.setChecked(True)
+
+        # Progress window setup
+        batch_channels = self._collect_batch_channel_settings()
+        enabled_channels = sum(1 for v in batch_channels.values() if bool(v.get("enabled", False)))
+        identify_units = max(1, enabled_channels)
+        steps_per_file = 1 + identify_units + (1 if coloc_widget is not None else 0)
+        total_steps = max(1, len(files) * steps_per_file)
+        progress_dlg = self._make_batch_progress_dialog(total_steps)
+        completed_steps = 0
+
         # Freeze the current batch-grid values for this multi-file run.
         self._capture_batch_config()
         self._batch_files_frozen_cfg = dict(getattr(self, "_batch_cfg", {}))
@@ -1289,6 +1523,14 @@ class IdentifyQWidget(QWidget):
             # 2) loop over files
             for fname in files:
                 print(f"\n=== Processing {fname} ===")
+                self._batch_progress_update(
+                    progress_dlg,
+                    completed_steps,
+                    total_steps,
+                    fname,
+                    "Opening file",
+                    f"Opening {fname}",
+                )
                 try:
                     # Clear existing layers to avoid name clashes (optional; comment out
                     # if you prefer to keep everything in the viewer)
@@ -1302,17 +1544,234 @@ class IdentifyQWidget(QWidget):
                     self._apply_batch_config()
                 except Exception as err:
                     print(f"Could not open {fname}: {err}")
+                    completed_steps += 1
+                    self._batch_progress_update(
+                        progress_dlg,
+                        completed_steps,
+                        total_steps,
+                        fname,
+                        "Open failed",
+                        f"Open failed: {err}",
+                    )
                     continue
+                completed_steps += 1
+                self._batch_progress_update(
+                    progress_dlg,
+                    completed_steps,
+                    total_steps,
+                    fname,
+                    "Open complete",
+                    "Open complete",
+                )
 
                 # 3) run channel batch identification exactly as usual
                 try:
-                    self.batch_on_click()
+                    if enabled_channels > 0:
+                        def _identify_cb(ch_idx, ch_total, ch_name):
+                            stage = f"Identify channel {ch_idx}/{ch_total}: {ch_name}"
+                            self._batch_progress_update(
+                                progress_dlg,
+                                completed_steps + max(0, ch_idx - 1),
+                                total_steps,
+                                fname,
+                                stage,
+                                stage,
+                            )
+
+                        self.batch_on_click(progress_callback=_identify_cb)
+                        completed_steps += identify_units
+                    else:
+                        self.batch_on_click()
+                        completed_steps += identify_units
+                    self._batch_progress_update(
+                        progress_dlg,
+                        completed_steps,
+                        total_steps,
+                        fname,
+                        "Identify complete",
+                        "Identify complete",
+                    )
                 except Exception as err:
                     print(f"Identify failed on {fname}: {err}")
+                    completed_steps += identify_units
+                    self._batch_progress_update(
+                        progress_dlg,
+                        completed_steps,
+                        total_steps,
+                        fname,
+                        "Identify failed",
+                        f"Identify failed: {err}",
+                    )
                     continue
+                if coloc_widget is not None:
+                    try:
+                        self._batch_progress_update(
+                            progress_dlg,
+                            completed_steps,
+                            total_steps,
+                            fname,
+                            "Running colocalization",
+                            "Running colocalization",
+                        )
+                        self._run_batch_colocalization(coloc_widget, coloc_cfg, fname)
+                        completed_steps += 1
+                        self._batch_progress_update(
+                            progress_dlg,
+                            completed_steps,
+                            total_steps,
+                            fname,
+                            "Colocalization complete",
+                            "Colocalization complete",
+                        )
+                    except Exception as err:
+                        print(f"Colocalization failed on {fname}: {err}")
+                        completed_steps += 1
+                        self._batch_progress_update(
+                            progress_dlg,
+                            completed_steps,
+                            total_steps,
+                            fname,
+                            "Colocalization failed",
+                            f"Colocalization failed: {err}",
+                        )
+                        continue
         finally:
             self._batch_files_running = False
             self._batch_files_frozen_cfg = {}
+            if coloc_widget is not None:
+                coloc_widget.deleteLater()
+            self._batch_progress_update(
+                progress_dlg,
+                total_steps,
+                total_steps,
+                "",
+                "Done",
+                "Batch processing finished.",
+            )
+            progress_dlg.close_btn.setEnabled(True)
+
+    def _image_channel_suffixes(self):
+        suffixes = []
+        for i in range(self.layersbox.count()):
+            suffix = self._batch_channel_key(self.layersbox.itemText(i))
+            if suffix and suffix not in suffixes:
+                suffixes.append(suffix)
+        return suffixes
+
+    def _configure_batch_colocalization(self):
+        suffixes = self._image_channel_suffixes()
+        if not suffixes:
+            print("No image channels available to configure batch colocalization.")
+            return None
+
+        cfg_prev = {
+            "distance": 5.0,
+            "anchor_suffix": suffixes[0],
+            "question_suffix": suffixes[min(1, len(suffixes) - 1)],
+            "run_all_to_anchor": False,
+            **(getattr(self, "_batch_coloc_cfg", {}) or {}),
+        }
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Batch Colocalization Settings")
+        layout = QVBoxLayout(dlg)
+        grid = QGridLayout()
+
+        anchor_combo = QComboBox(dlg)
+        anchor_combo.addItems(suffixes)
+        if cfg_prev["anchor_suffix"] in suffixes:
+            anchor_combo.setCurrentText(cfg_prev["anchor_suffix"])
+
+        question_combo = QComboBox(dlg)
+        question_combo.addItems(suffixes)
+        if cfg_prev["question_suffix"] in suffixes:
+            question_combo.setCurrentText(cfg_prev["question_suffix"])
+        elif len(suffixes) > 1:
+            question_combo.setCurrentIndex(1)
+
+        distance = QDoubleSpinBox(dlg)
+        distance.setRange(0, 20)
+        distance.setSingleStep(0.2)
+        distance.setValue(float(cfg_prev.get("distance", 5.0)))
+
+        run_all = QCheckBox("Run all combinations to anchor", dlg)
+        run_all.setChecked(bool(cfg_prev.get("run_all_to_anchor", False)))
+
+        grid.addWidget(QLabel("Anchor channel"), 0, 0)
+        grid.addWidget(anchor_combo, 0, 1)
+        grid.addWidget(QLabel("Comparison channel"), 1, 0)
+        grid.addWidget(question_combo, 1, 1)
+        grid.addWidget(QLabel("Max Distance (sub-pixels)"), 2, 0)
+        grid.addWidget(distance, 2, 1)
+        grid.addWidget(run_all, 3, 0, 1, 2)
+        layout.addLayout(grid)
+
+        btn_row = QHBoxLayout()
+        run_btn = QPushButton("Run", dlg)
+        cancel_btn = QPushButton("Cancel", dlg)
+        run_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(run_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        cfg = {
+            "distance": float(distance.value()),
+            "anchor_suffix": anchor_combo.currentText(),
+            "question_suffix": question_combo.currentText(),
+            "run_all_to_anchor": bool(run_all.isChecked()),
+        }
+
+        if (not cfg["run_all_to_anchor"]) and cfg["anchor_suffix"] == cfg["question_suffix"]:
+            for suffix in suffixes:
+                if suffix != cfg["anchor_suffix"]:
+                    cfg["question_suffix"] = suffix
+                    break
+
+        self._batch_coloc_cfg = dict(cfg)
+        return cfg
+
+    def _point_layer_suffix(self, point_layer_name: str) -> str:
+        text = point_layer_name.strip()
+        if text.lower().startswith("points"):
+            text = text[len("points"):].strip()
+        return self._batch_channel_key(text)
+
+    def _point_layer_name_by_suffix(self, coloc_widget, suffix):
+        for layer in coloc_widget._points_layers_for_coloc():
+            if self._point_layer_suffix(layer.name) == suffix:
+                return layer.name
+        return None
+
+    def _run_batch_colocalization(self, coloc_widget, cfg, source_file):
+        coloc_widget._refresh_layers()
+        coloc_widget.euc_distance.setValue(float(cfg["distance"]))
+        coloc_widget._filename_user_set = False
+        coloc_widget._set_default_output_filename(force=True)
+        coloc_widget.auto_save.setChecked(True)
+
+        anchor_name = self._point_layer_name_by_suffix(coloc_widget, cfg["anchor_suffix"])
+        if not anchor_name:
+            print(f"Colocalization skipped for {source_file}: anchor points not found for '{cfg['anchor_suffix']}'.")
+            return
+        coloc_widget.points_anchor.setCurrentText(anchor_name)
+
+        if cfg.get("run_all_to_anchor", False):
+            coloc_widget.calculate_all_colocalizing()
+            return
+
+        question_name = self._point_layer_name_by_suffix(coloc_widget, cfg["question_suffix"])
+        if not question_name:
+            print(
+                f"Colocalization skipped for {source_file}: comparison points not found for "
+                f"'{cfg['question_suffix']}'."
+            )
+            return
+        coloc_widget.points_question.setCurrentText(question_name)
+        coloc_widget.calculate_colocalizing()
             
     def _capture_batch_config(self):
         cfg = {}
@@ -1374,7 +1833,7 @@ class IdentifyQWidget(QWidget):
                 w_spin.widget().setValue(mass)
                 w_tick.widget().setChecked(checked)
 
-    def batch_on_click(self):
+    def batch_on_click(self, progress_callback=None):
         print(self.batch_grid_layout.count())
 
         # Snapshot selections first so UI updates/signals cannot mutate values
@@ -1388,9 +1847,18 @@ class IdentifyQWidget(QWidget):
             if tick_item.widget().isChecked():
                 selected_rows.append((i, int(mass_item.widget().value())))
 
+        if not selected_rows:
+            if progress_callback is not None:
+                progress_callback(0, 0, "no channels selected")
+            return
+
         self._batch_running = True
         try:
-            for row_idx, mass_value in selected_rows:
+            total_rows = len(selected_rows)
+            for idx, (row_idx, mass_value) in enumerate(selected_rows, start=1):
+                channel_name = self.layersbox.itemText(row_idx)
+                if progress_callback is not None:
+                    progress_callback(idx, total_rows, channel_name)
                 self.layersbox.setCurrentIndex(row_idx)
                 self.mass_slider.setValue(mass_value)
                 self._on_click(minmass_override=mass_value)
@@ -1407,18 +1875,35 @@ class IdentifyQWidget(QWidget):
         # print("napari has", len(self.viewer.layers), "layers")
         # f = tp.locate(self.viewer.layers[2].data,5,minmass=500)
         f2 = self.f
-        #add the filters here if check size ..if ecc...
-        if self.ecc_tick.isChecked():
-            f2 = f2[ (f2['ecc'] < self.ecc_input.value())
-                   ]
-        if self.size_filter_tick.isChecked():
-            cutoff = self.size_filter_input.value()
-            if "size" in f2.columns:
-                f2 = f2[(f2["size"] < cutoff)]
-            else:
-                axes = [c for c in ("size_x", "size_y", "size_z") if c in f2.columns]
-                if axes:
-                    f2 = f2[(f2[axes] < cutoff).all(axis=1)]
+        # add the filters here if selected
+        if "ecc" in f2.columns:
+            f2 = self._apply_bounds_filter(
+                f2,
+                "ecc",
+                self.ecc_min_tick.isChecked(),
+                self.ecc_min_input.value(),
+                self.ecc_max_tick.isChecked(),
+                self.ecc_max_input.value(),
+            )
+        if "size" in f2.columns:
+            f2 = self._apply_bounds_filter(
+                f2,
+                "size",
+                self.size_min_tick.isChecked(),
+                self.size_min_input.value(),
+                self.size_max_tick.isChecked(),
+                self.size_max_input.value(),
+            )
+        else:
+            axes = [c for c in ("size_x", "size_y", "size_z") if c in f2.columns]
+            f2 = self._apply_bounds_filter(
+                f2,
+                axes,
+                self.size_min_tick.isChecked(),
+                self.size_min_input.value(),
+                self.size_max_tick.isChecked(),
+                self.size_max_input.value(),
+            )
         f2 = f2[(f2['mass'] > self.mass_slider.value())]
 
         
@@ -1848,6 +2333,18 @@ class ColocalizationQWidget(QWidget):
     def _master_stats_path(self):
         return self._output_directory() / "colocalization_master.csv"
 
+    def _source_file_for_stats(self, anchor_layer=None):
+        source_path = self._layer_file_path(anchor_layer) if anchor_layer is not None else None
+        if source_path is not None:
+            return str(source_path)
+        for layer in self.viewer.layers:
+            if layer._type_string != "image":
+                continue
+            source_path = self._layer_file_path(layer)
+            if source_path is not None:
+                return str(source_path)
+        return ""
+
     def _points_dataframe(self, layer):
         import pandas as pd
 
@@ -1897,8 +2394,23 @@ class ColocalizationQWidget(QWidget):
             return
         path = self._master_stats_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame(rows)
-        df.to_csv(path, mode='a', header=not path.exists(), index=False)
+        df_new = pd.DataFrame(rows)
+        if path.exists():
+            try:
+                df_prev = pd.read_csv(path)
+                cols = list(dict.fromkeys(list(df_prev.columns) + list(df_new.columns)))
+                merged = pd.concat(
+                    [
+                        df_prev.reindex(columns=cols),
+                        df_new.reindex(columns=cols),
+                    ],
+                    ignore_index=True,
+                )
+                merged.to_csv(path, index=False)
+                return
+            except Exception as err:
+                print(f"Could not merge existing master stats ({err}); appending rows.")
+        df_new.to_csv(path, mode='a', header=not path.exists(), index=False)
 
     def _run_colocalization(self, anchor_layer, question_layer):
         from sklearn.neighbors import KDTree
@@ -1906,6 +2418,7 @@ class ColocalizationQWidget(QWidget):
 
         anchor_name = anchor_layer.name
         question_name = question_layer.name
+        source_file = self._source_file_for_stats(anchor_layer)
         anchor_df = self._points_dataframe(anchor_layer)
         question_df = self._points_dataframe(question_layer)
         anchor_cols, anchor_coords = self._coords_view(anchor_df)
@@ -1981,6 +2494,7 @@ class ColocalizationQWidget(QWidget):
                         "colocalized_percent_anchor": ratio * 100.0,
                         "distance_threshold": threshold,
                         "spots_output_file": str(self._spots_output_path()),
+                        "source_file": source_file,
                     }
                 )
         else:
@@ -2016,6 +2530,7 @@ class ColocalizationQWidget(QWidget):
                     "colocalized_percent_anchor": ratio * 100.0,
                     "distance_threshold": threshold,
                     "spots_output_file": str(self._spots_output_path()),
+                    "source_file": source_file,
                 }
             )
 

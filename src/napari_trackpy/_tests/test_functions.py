@@ -106,3 +106,24 @@ def test_drop_invalid_coordinate_rows_removes_nan_and_inf():
     out = widget_mod._drop_invalid_coordinate_rows(df, ["frame", "z", "y", "x"])
     assert len(out) == 1
     assert out.iloc[0]["frame"] == 0
+
+
+def test_apply_bounds_filter_supports_min_max_and_range():
+    pytest.importorskip("napari")
+    widget_mod = importlib.import_module("napari_trackpy._widget")
+
+    df = pd.DataFrame(
+        {
+            "size_x": [0.8, 1.2, 1.8, 2.5],
+            "size_y": [0.9, 1.3, 1.7, 2.6],
+        }
+    )
+
+    min_only = widget_mod.IdentifyQWidget._apply_bounds_filter(None, df, ["size_x", "size_y"], True, 1.0, False, 0.0)
+    assert len(min_only) == 3
+
+    max_only = widget_mod.IdentifyQWidget._apply_bounds_filter(None, df, ["size_x", "size_y"], False, 0.0, True, 2.0)
+    assert len(max_only) == 3
+
+    in_range = widget_mod.IdentifyQWidget._apply_bounds_filter(None, df, ["size_x", "size_y"], True, 1.0, True, 2.0)
+    assert len(in_range) == 2
