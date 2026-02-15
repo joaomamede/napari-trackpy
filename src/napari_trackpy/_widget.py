@@ -9,7 +9,6 @@ Replace code below according to your needs.
 from pathlib import Path
 from typing import TYPE_CHECKING
 import json
-import trackpy as tp
 from magicgui import magic_factory
 from qtpy.QtWidgets import QVBoxLayout, QHBoxLayout,QPushButton, QCheckBox, QComboBox, QSpinBox
 from qtpy.QtWidgets import QLabel, QDoubleSpinBox, QWidget, QGridLayout
@@ -100,12 +99,22 @@ def _add_points_compat(viewer, data, **kwargs):
         return viewer.add_points(data, **fallback)
 
 def _get_choice_layer(self,_widget):    
-    for j,layer in enumerate(self.viewer.layers):
-        if layer.name == _widget.currentText():
-            index_layer = j
-            break
-    print("Layer where points are is:",j)
-    return index_layer
+    if len(self.viewer.layers) == 0:
+        raise ValueError("No layers available.")
+
+    current_text = _widget.currentText()
+    for j, layer in enumerate(self.viewer.layers):
+        if layer.name == current_text:
+            print("Layer where points are is:", j)
+            return j
+
+    # Fallback to the combobox index if names changed but order still matches.
+    idx = _widget.currentIndex()
+    if 0 <= idx < len(self.viewer.layers):
+        print("Layer where points are is:", idx)
+        return idx
+
+    raise ValueError(f"Could not find selected layer '{current_text}'.")
 
 def _get_open_filename(self,type='image',separator= " :: ",choice_widget=None):
     import os
@@ -128,6 +137,50 @@ def _get_open_filename(self,type='image',separator= " :: ",choice_widget=None):
         except:
             _filename = 'unknown_file.nd2'
     return _filename
+
+
+def _append_layer_properties(df, props):
+    """Append napari layer properties to a dataframe by row position."""
+    n_rows = len(df)
+    for key, values in (props or {}).items():
+        try:
+            arr = np.asarray(values)
+        except Exception:
+            continue
+
+        if arr.ndim == 0 or arr.shape[0] != n_rows:
+            continue
+
+        if arr.ndim == 1:
+            df[key] = arr
+            continue
+
+        if arr.ndim == 2 and arr.shape[1] == 1:
+            df[key] = arr[:, 0]
+            continue
+
+        # Multi-component properties become numbered columns.
+        if arr.ndim == 2:
+            for i in range(arr.shape[1]):
+                df[f"{key}_{i}"] = arr[:, i]
+            continue
+
+        # Higher-dimensional payloads are stored as objects.
+        df[key] = [v for v in values]
+
+
+def _drop_invalid_coordinate_rows(df, coord_cols):
+    """Drop rows with non-finite coordinate values for robust napari/trackpy usage."""
+    import pandas as pd
+
+    if not coord_cols:
+        return df
+
+    out = df.copy()
+    for col in coord_cols:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out.replace([np.inf, -np.inf], np.nan, inplace=True)
+    return out.dropna(subset=coord_cols).copy()
     
 # def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
 #     import trackpy as tp
@@ -863,6 +916,7 @@ class IdentifyQWidget(QWidget):
         )
         if filename:
             path = Path(filename)
+            self.filename_edit.setText(str(path))
             return str(path)
         else:
             return "/tmp/Null.csv"
@@ -1061,22 +1115,33 @@ class IdentifyQWidget(QWidget):
                 else [_stack3d(t_idx=t) for t in t_range]  # TZYX
             )
 
-            # ---------- ipyparallel (default) ------------------------------------
-            from ipyparallel import Client
             def _loc_worker(frame_idx, img):
-                import trackpy as tp, pandas as pd
-                try: img = img.compute()      # dask → numpy if needed
-                except AttributeError: pass
+                import trackpy as tp
+
+                try:
+                    img = img.compute()      # dask → numpy if needed
+                except AttributeError:
+                    pass
                 df = tp.locate(img, diam, minmass=minmass, engine="numba")
                 df["frame"] = frame_idx
                 return df
 
-            rc = Client()
-            v  = rc.load_balanced_view()
-            print("Using", len(rc), "ipyparallel engines")
+            results = None
+            try:
+                from ipyparallel import Client
 
-            async_res = v.map(_loc_worker, list(t_range), image_seq)
-            self.f = pd.concat(async_res.get(), ignore_index=True)
+                rc = Client()
+                if len(rc) == 0:
+                    raise RuntimeError("No ipyparallel engines available.")
+                v = rc.load_balanced_view()
+                print("Using", len(rc), "ipyparallel engines")
+                async_res = v.map(_loc_worker, list(t_range), image_seq)
+                results = async_res.get()
+            except Exception as err:
+                print(f"ipyparallel unavailable ({err}); falling back to local loop.")
+                results = [_loc_worker(frame_idx, img) for frame_idx, img in zip(t_range, image_seq)]
+
+            self.f = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
 
             # ------------------------------------------------------------------
             # ## Alternative multiprocessing.Pool method (commented, ready)
@@ -1177,7 +1242,7 @@ class IdentifyQWidget(QWidget):
         #     point_colors = 'cyan'
         # elif clr_name == 'blue':
         #     point_colors = 'yellow'
-        point_colors = clr_dict[clr_name]
+        point_colors = clr_dict.get(clr_name, "white")
         if len(_points) > 0:
             points_options = dict(self.points_options)
             points_options["size"] = self._points_size_from_detection()
@@ -1347,10 +1412,14 @@ class IdentifyQWidget(QWidget):
             f2 = f2[ (f2['ecc'] < self.ecc_input.value())
                    ]
         if self.size_filter_tick.isChecked():
-            f2 = f2[ (f2['size'] < self.size_filter_input.value())
-                   ]
-        f2 = f2[(self.f['mass'] > self.mass_slider.value())    
-                   ]
+            cutoff = self.size_filter_input.value()
+            if "size" in f2.columns:
+                f2 = f2[(f2["size"] < cutoff)]
+            else:
+                axes = [c for c in ("size_x", "size_y", "size_z") if c in f2.columns]
+                if axes:
+                    f2 = f2[(f2[axes] < cutoff).all(axis=1)]
+        f2 = f2[(f2['mass'] > self.mass_slider.value())]
 
         
         if len(self.viewer.layers[index_layer].data.shape) < 3:
@@ -1386,8 +1455,9 @@ class IdentifyQWidget(QWidget):
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
             
         b = self.viewer.layers.selection.active.properties
-        for key in b.keys():
-            df[key] = b[key]
+        _append_layer_properties(df, b)
+        coord_cols = ['frame', 'z', 'y', 'x'] if 'z' in df.columns else ['frame', 'y', 'x']
+        df = _drop_invalid_coordinate_rows(df, coord_cols)
         df.to_csv(self.filename_edit.text())
 
 class LinkingQWidget(QWidget):
@@ -1478,11 +1548,35 @@ class LinkingQWidget(QWidget):
         )
         if filename:
             path = Path(filename)
-            self.filename_edit.setText(str(path))
+            self.filename_edit_links.setText(str(path))
     
     def _save_results_links(self):
         import pandas as pd
         self.links.to_csv(self.filename_edit_links.text())
+
+    def _sanitize_link_input(self, df):
+        import pandas as pd
+
+        required_cols = ["frame", "y", "x"]
+        if "z" in df.columns:
+            required_cols.insert(1, "z")
+
+        out = df.copy()
+        out.replace([np.inf, -np.inf], np.nan, inplace=True)
+        for col in required_cols:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+
+        before = len(out)
+        out = out.dropna(subset=required_cols).copy()
+        dropped = before - len(out)
+        if dropped:
+            print(f"Dropped {dropped} point rows with invalid frame/coordinate values before linking.")
+
+        if len(out) == 0:
+            return out
+
+        out["frame"] = np.rint(out["frame"]).astype(np.int64)
+        return out
 
     def _enable_tracking(self):
         self.btn.setEnabled(False)
@@ -1502,6 +1596,7 @@ class LinkingQWidget(QWidget):
 
     def _track(self):
         import pandas as pd
+        import trackpy as tp
         ##if 2d
         #this is from the other widget..dang
         # self.layersbox.currentIndex()
@@ -1511,11 +1606,24 @@ class LinkingQWidget(QWidget):
         elif len(self.viewer.layers[0].data.shape) > 3:
             df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
         b = self.viewer.layers.selection.active.properties
-        for key in b.keys():
-            df[key] = b[key]
+        _append_layer_properties(df, b)
+        coord_cols = ['frame', 'z', 'y', 'x'] if 'z' in df.columns else ['frame', 'y', 'x']
+        df = _drop_invalid_coordinate_rows(df, coord_cols)
+
+        df = self._sanitize_link_input(df)
+        if len(df) == 0:
+            print("No valid points left after removing NaN/inf rows. Linking aborted.")
+            return
 
         print(df)
-        links = tp.link(df, search_range=self.distance.value(),memory=self.memory.value())
+        pos_columns = ['z', 'y', 'x'] if 'z' in df.columns else ['y', 'x']
+        links = tp.link(
+            df,
+            search_range=self.distance.value(),
+            memory=self.memory.value(),
+            pos_columns=pos_columns,
+            t_column='frame',
+        )
         if self.stubs_tick.isChecked():
             links = tp.filter_stubs(links, self.stubs_input.value())
         # if 2D:
@@ -1527,7 +1635,7 @@ class LinkingQWidget(QWidget):
         # _tracks = links.loc[:,['particle','frame','z','y','x']]
 
         _tracks = self.viewer.add_tracks(_tracks,name='trackpy')
-        _tracks.scale = self.viewer.layers[0].scale[1:]
+        _tracks.scale = self.viewer.layers.selection.active.scale
         self.links = links
         print(links)
 
@@ -1744,23 +1852,43 @@ class ColocalizationQWidget(QWidget):
         import pandas as pd
 
         points = np.asarray(layer.data)
-        ndim = points.shape[1] if points.ndim == 2 else 3
-        coord_cols = ['frame', 'z', 'y', 'x'] if ndim >= 4 else ['frame', 'y', 'x']
+        n_coords = points.shape[1] if points.ndim == 2 else 0
+        if n_coords == 2:
+            coord_cols = ['y', 'x']
+        elif n_coords == 3:
+            # Keep backward compatibility with existing identify outputs.
+            coord_cols = ['frame', 'y', 'x']
+        elif n_coords == 4:
+            coord_cols = ['frame', 'z', 'y', 'x']
+        else:
+            coord_cols = [f'axis_{i}' for i in range(n_coords)]
         df = pd.DataFrame(points, columns=coord_cols)
+        df.attrs["coord_cols"] = coord_cols
 
         props = getattr(layer, "properties", {}) or {}
-        for key, values in props.items():
-            try:
-                if len(values) == len(df):
-                    df[key] = values
-            except Exception:
-                continue
+        _append_layer_properties(df, props)
+        df = _drop_invalid_coordinate_rows(df, coord_cols)
+        df.attrs["coord_cols"] = coord_cols
 
         return df
 
     def _coords_view(self, df):
-        coord_cols = ['frame', 'z', 'y', 'x'] if 'z' in df.columns else ['frame', 'y', 'x']
+        coord_cols = df.attrs.get("coord_cols")
+        if not coord_cols:
+            coord_cols = [c for c in ('frame', 'z', 'y', 'x') if c in df.columns]
+        if not coord_cols:
+            coord_cols = list(df.columns)
         return coord_cols, df[coord_cols].dropna()
+
+    def _time_gradient_color(self, idx, total):
+        # Light-to-dark blue gradient for increasing time.
+        if total <= 1:
+            return (70, 150, 245)
+        t = float(idx) / float(total - 1)
+        r = int(170 + (40 - 170) * t)
+        g = int(220 + (90 - 220) * t)
+        b = int(255 + (180 - 255) * t)
+        return (r, g, b)
 
     def _append_stats_rows(self, rows):
         import pandas as pd
@@ -1774,6 +1902,7 @@ class ColocalizationQWidget(QWidget):
 
     def _run_colocalization(self, anchor_layer, question_layer):
         from sklearn.neighbors import KDTree
+        import pandas as pd
 
         anchor_name = anchor_layer.name
         question_name = question_layer.name
@@ -1789,19 +1918,117 @@ class ColocalizationQWidget(QWidget):
             print("Anchor and comparison points have different dimensionality.")
             return None
 
-        tree = KDTree(question_coords.to_numpy(), leaf_size=1)
-        distances_list = tree.query(anchor_coords.to_numpy())[0].ravel()
-        hist, bins = np.histogram(distances_list, bins=100)
-        self._plt.plot(
-            bins[:-1],
-            hist,
-            pen=(np.random.randint(16), 16),
-            name='green',
-        )
+        spatial_cols = [c for c in anchor_cols if c != "frame"] or anchor_cols
+        threshold = float(self.euc_distance.value())
+        stats_rows = []
+        coloc_index_parts = []
+        coloc_points_parts = []
 
-        mask = distances_list < self.euc_distance.value()
-        coloc_indices = anchor_coords.index[mask]
-        colocalizing_points = anchor_coords.to_numpy()[mask]
+        per_frame_mode = "frame" in anchor_cols and "frame" in question_coords.columns
+        if per_frame_mode:
+            anchor_work = anchor_coords.copy()
+            question_work = question_coords.copy()
+            anchor_work["__frame"] = pd.to_numeric(anchor_work["frame"], errors="coerce").round()
+            question_work["__frame"] = pd.to_numeric(question_work["frame"], errors="coerce").round()
+            anchor_work["__frame"].replace([np.inf, -np.inf], np.nan, inplace=True)
+            question_work["__frame"].replace([np.inf, -np.inf], np.nan, inplace=True)
+            anchor_work = anchor_work.dropna(subset=["__frame"]).copy()
+            question_work = question_work.dropna(subset=["__frame"]).copy()
+            anchor_work["__frame"] = anchor_work["__frame"].astype(np.int64)
+            question_work["__frame"] = question_work["__frame"].astype(np.int64)
+
+            frames = sorted(anchor_work["__frame"].unique().tolist())
+            for idx, frame_value in enumerate(frames):
+                anchor_frame = anchor_work[anchor_work["__frame"] == frame_value]
+                question_frame = question_work[question_work["__frame"] == frame_value]
+                anchor_count = len(anchor_frame)
+                question_count = len(question_frame)
+
+                if anchor_count == 0:
+                    continue
+
+                if question_count == 0:
+                    coloc_count = 0
+                    ratio = 0.0
+                else:
+                    tree = KDTree(question_frame[spatial_cols].to_numpy(), leaf_size=1)
+                    distances_list = tree.query(anchor_frame[spatial_cols].to_numpy())[0].ravel()
+                    hist, bins = np.histogram(distances_list, bins=100)
+                    self._plt.plot(
+                        bins[:-1],
+                        hist,
+                        pen=self._time_gradient_color(idx, len(frames)),
+                        name=f"t={frame_value}",
+                    )
+
+                    mask = distances_list < threshold
+                    frame_coloc_idx = anchor_frame.index[mask]
+                    if len(frame_coloc_idx) > 0:
+                        coloc_index_parts.append(np.asarray(frame_coloc_idx))
+                        coloc_points_parts.append(anchor_frame.loc[frame_coloc_idx, anchor_cols].to_numpy())
+                    coloc_count = int(mask.sum())
+                    ratio = (coloc_count / anchor_count) if anchor_count else 0.0
+
+                stats_rows.append(
+                    {
+                        "anchor_layer": anchor_name,
+                        "comparison_layer": question_name,
+                        "analysis_mode": "per_frame",
+                        "frame": int(frame_value),
+                        "anchor_particles": anchor_count,
+                        "comparison_particles": question_count,
+                        "colocalized_particles": coloc_count,
+                        "colocalized_percent_anchor": ratio * 100.0,
+                        "distance_threshold": threshold,
+                        "spots_output_file": str(self._spots_output_path()),
+                    }
+                )
+        else:
+            tree = KDTree(question_coords[spatial_cols].to_numpy(), leaf_size=1)
+            distances_list = tree.query(anchor_coords[spatial_cols].to_numpy())[0].ravel()
+            hist, bins = np.histogram(distances_list, bins=100)
+            self._plt.plot(
+                bins[:-1],
+                hist,
+                pen=self._time_gradient_color(0, 1),
+                name="all",
+            )
+
+            mask = distances_list < threshold
+            coloc_indices = anchor_coords.index[mask]
+            if len(coloc_indices) > 0:
+                coloc_index_parts.append(np.asarray(coloc_indices))
+                coloc_points_parts.append(anchor_coords.loc[coloc_indices, anchor_cols].to_numpy())
+
+            anchor_count = len(anchor_coords)
+            question_count = len(question_coords)
+            coloc_count = int(mask.sum())
+            ratio = (coloc_count / anchor_count) if anchor_count else 0.0
+            stats_rows.append(
+                {
+                    "anchor_layer": anchor_name,
+                    "comparison_layer": question_name,
+                    "analysis_mode": "all_points",
+                    "frame": "all",
+                    "anchor_particles": anchor_count,
+                    "comparison_particles": question_count,
+                    "colocalized_particles": coloc_count,
+                    "colocalized_percent_anchor": ratio * 100.0,
+                    "distance_threshold": threshold,
+                    "spots_output_file": str(self._spots_output_path()),
+                }
+            )
+
+        if coloc_index_parts:
+            coloc_indices = np.unique(np.concatenate(coloc_index_parts))
+        else:
+            coloc_indices = np.array([], dtype=int)
+
+        if coloc_points_parts:
+            colocalizing_points = np.concatenate(coloc_points_parts, axis=0)
+        else:
+            colocalizing_points = np.empty((0, len(anchor_cols)), dtype=float)
+
         coloc_name = f"Coloc_{question_name}_in_{anchor_name}"
 
         coloc_points = _add_points_compat(
@@ -1816,24 +2043,13 @@ class ColocalizationQWidget(QWidget):
         )
         coloc_points.scale = anchor_layer.scale
 
-        anchor_count = len(anchor_coords)
-        question_count = len(question_coords)
-        coloc_count = int(mask.sum())
-        ratio = (coloc_count / anchor_count) if anchor_count else 0.0
-        stats = {
-            "anchor_layer": anchor_name,
-            "comparison_layer": question_name,
-            "anchor_particles": anchor_count,
-            "comparison_particles": question_count,
-            "colocalized_particles": coloc_count,
-            "colocalized_percent_anchor": ratio * 100.0,
-            "distance_threshold": float(self.euc_distance.value()),
-            "spots_output_file": str(self._spots_output_path()),
-        }
+        total_anchor = int(sum(row["anchor_particles"] for row in stats_rows))
+        total_coloc = int(sum(row["colocalized_particles"] for row in stats_rows))
+        ratio = (total_coloc / total_anchor) if total_anchor else 0.0
 
         label = QLabel(
             f"Number of colocalizing in {coloc_name}: "
-            f"{anchor_count} {coloc_count} {ratio:.4f}"
+            f"{total_anchor} {total_coloc} {ratio:.4f}"
         )
         self.layout().addWidget(label)
 
@@ -1842,8 +2058,45 @@ class ColocalizationQWidget(QWidget):
         df_out[column_name] = 0
         df_out.loc[coloc_indices, column_name] = 1
 
+        stats_suffix = f"{question_name} to {anchor_name}"
+        anchor_stats_col = "anchor_particles per frame"
+        question_stats_col = f"comparison_particles per frame {stats_suffix}"
+        coloc_stats_col = f"colocalized_particles per frame {stats_suffix}"
+        coloc_pct_col = f"colocalized_percent_anchor per frame {stats_suffix}"
+
+        per_frame_rows = [r for r in stats_rows if r.get("analysis_mode") == "per_frame"]
+        if "frame" in df_out.columns and per_frame_rows:
+            frame_series = pd.to_numeric(df_out["frame"], errors="coerce").round()
+            per_frame_map = {
+                int(r["frame"]): r
+                for r in per_frame_rows
+                if isinstance(r.get("frame"), (int, np.integer))
+            }
+
+            def _lookup(row_frame, key):
+                if pd.isna(row_frame):
+                    return np.nan
+                row = per_frame_map.get(int(row_frame))
+                if row is None:
+                    return np.nan
+                return row.get(key, np.nan)
+
+            df_out[anchor_stats_col] = frame_series.map(lambda f: _lookup(f, "anchor_particles"))
+            df_out[question_stats_col] = frame_series.map(lambda f: _lookup(f, "comparison_particles"))
+            df_out[coloc_stats_col] = frame_series.map(lambda f: _lookup(f, "colocalized_particles"))
+            df_out[coloc_pct_col] = frame_series.map(lambda f: _lookup(f, "colocalized_percent_anchor"))
+        elif stats_rows:
+            total_anchor = int(sum(r.get("anchor_particles", 0) for r in stats_rows))
+            total_question = int(sum(r.get("comparison_particles", 0) for r in stats_rows))
+            total_coloc = int(sum(r.get("colocalized_particles", 0) for r in stats_rows))
+            total_pct = (total_coloc / total_anchor * 100.0) if total_anchor else 0.0
+            df_out[anchor_stats_col] = total_anchor
+            df_out[question_stats_col] = total_question
+            df_out[coloc_stats_col] = total_coloc
+            df_out[coloc_pct_col] = total_pct
+
         return {
-            "stats": stats,
+            "stats_rows": stats_rows,
             "column_name": column_name,
             "spots_df": df_out,
             "coloc_indices": coloc_indices,
@@ -1889,6 +2142,7 @@ class ColocalizationQWidget(QWidget):
             print("No points layers available for colocalization.")
             return
 
+        self._plt.clear()
         anchor_layer = self._get_selected_points_layer(self.points_anchor)
         question_layer = self._get_selected_points_layer(self.points_question)
         result = self._run_colocalization(anchor_layer, question_layer)
@@ -1897,7 +2151,7 @@ class ColocalizationQWidget(QWidget):
 
         self._colocalizing_points = result["colocalizing_points"]
         self._latest_coloc_df = result["spots_df"]
-        self._latest_stats_rows = [result["stats"]]
+        self._latest_stats_rows = list(result["stats_rows"])
         self._append_stats_rows(self._latest_stats_rows)
 
         if self.auto_save.isChecked():
@@ -1908,9 +2162,11 @@ class ColocalizationQWidget(QWidget):
             print("No points layers available for colocalization.")
             return
 
+        self._plt.clear()
         anchor_idx = self.points_anchor.currentIndex()
         anchor_layer = self._get_selected_points_layer(self.points_anchor)
         final_df = self._points_dataframe(anchor_layer).copy()
+        anchor_base_cols = set(final_df.columns)
         stats_rows = []
 
         for i in range(self.points_question.count()):
@@ -1922,10 +2178,12 @@ class ColocalizationQWidget(QWidget):
             if result is None:
                 continue
 
-            col_name = result["column_name"]
-            final_df[col_name] = 0
-            final_df.loc[result["coloc_indices"], col_name] = 1
-            stats_rows.append(result["stats"])
+            result_df = result["spots_df"]
+            for col in result_df.columns:
+                if col in anchor_base_cols:
+                    continue
+                final_df[col] = result_df[col]
+            stats_rows.extend(result["stats_rows"])
 
         if not stats_rows:
             print("No valid comparisons were generated.")

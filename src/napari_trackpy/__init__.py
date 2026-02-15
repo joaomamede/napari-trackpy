@@ -1,15 +1,27 @@
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
-# from ._reader import napari_get_reader
-# from ._sample_data import make_sample_data
-from ._widget import IdentifyQWidget, LinkingQWidget
-# from ._writer import write_multiple, write_single_image
+from ._reader import napari_get_reader
+from ._sample_data import make_sample_data
+from ._writer import write_multiple, write_single_image
 
-__all__ = (
-    # "napari_get_reader",
-    # "write_single_image",
-    # "write_multiple",
-    # "make_sample_data",
-    "IdentifyQWidget",
-    "LinkingQWidget",
-)
+__all__ = [
+    "napari_get_reader",
+    "write_single_image",
+    "write_multiple",
+    "make_sample_data",
+]
+
+# GUI widgets depend on the napari/Qt stack. Keep package import lightweight
+# so reader/writer/sample_data still import in headless or partial envs.
+try:
+    from ._widget import ColocalizationQWidget, IdentifyQWidget, LinkingQWidget
+
+    __all__.extend(
+        [
+            "IdentifyQWidget",
+            "LinkingQWidget",
+            "ColocalizationQWidget",
+        ]
+    )
+except Exception:
+    pass

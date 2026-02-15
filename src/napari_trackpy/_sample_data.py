@@ -92,27 +92,3 @@ def make_labels_links_opencl(shape, j, radius=5):
     cl.enqueue_copy(queue, mask, mask_buf)
     labels,_=label(mask)
     return labels,positions
-
-# Example usage
-shape = (10, 1024, 1024)  # Z, Y, X dimensions
-positions = np.array([
-    [5.23423, 512.23423, 51.223423],
-    [2.93423, 100.5346456, 400.892743],
-    [1.83423, 900.932485, 600.233485],
-    [5.23423, 512.23423, 51.223423],
-    [2.93423, 100.5346456, 400.892743],
-    [2.83423, 900.932485, 600.233485],
-    [5.23423, 512.23423, 51.223423],
-    [2.93423, 100.5346456, 400.892743],
-    [2.83423, 900.932485, 600.233485]
-], dtype=np.float32)  # Example positions (Z, Y, X)
-
-j = pd.DataFrame(positions,columns=['z','y','x'])
-radius = 5
-
-# Generate the mask
-mask = make_labels_links_opencl(shape, positions, radius)
-labels,nb = label(mask)
-v = napari.Viewer()
-v.add_labels(labels)
-# The `mask` variable now contains the binary mask with the specified regions filled

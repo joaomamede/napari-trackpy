@@ -1,36 +1,108 @@
-import numpy as np
+import importlib
 
-from napari_trackpy import ExampleQWidget, example_magic_widget
-
-
-# make_napari_viewer is a pytest fixture that returns a napari viewer object
-# capsys is a pytest fixture that captures stdout and stderr output streams
-def test_example_q_widget(make_napari_viewer, capsys):
-    # make viewer and add an image layer using our fixture
-    viewer = make_napari_viewer()
-    viewer.add_image(np.random.random((100, 100)))
-
-    # create our widget, passing in the viewer
-    my_widget = ExampleQWidget(viewer)
-
-    # call our widget method
-    my_widget._on_click()
-
-    # read captured output and check that it's as we expected
-    captured = capsys.readouterr()
-    assert captured.out == "napari has 1 layers\n"
+import pytest
 
 
-def test_example_magic_widget(make_napari_viewer, capsys):
-    viewer = make_napari_viewer()
-    layer = viewer.add_image(np.random.random((100, 100)))
+def _widget_module():
+    pytest.importorskip("napari")
+    pytest.importorskip("qtpy")
+    return importlib.import_module("napari_trackpy._widget")
 
-    # this time, our widget will be a MagicFactory or FunctionGui instance
-    my_widget = example_magic_widget()
 
-    # if we "call" this object, it'll execute our function
-    my_widget(viewer.layers[0])
+def test_add_points_compat_maps_edge_to_border():
+    mod = _widget_module()
 
-    # read captured output and check that it's as we expected
-    captured = capsys.readouterr()
-    assert captured.out == f"you have selected {layer}\n"
+    class ViewerBorder:
+        def add_points(self, data, *, border_width=None, border_color=None, **kwargs):
+            return {
+                "data": data,
+                "border_width": border_width,
+                "border_color": border_color,
+                **kwargs,
+            }
+
+    out = mod._add_points_compat(
+        ViewerBorder(),
+        [[1, 2]],
+        edge_width=0.5,
+        edge_color="red",
+        size=3,
+    )
+    assert out["border_width"] == 0.5
+    assert out["border_color"] == "red"
+    assert out["size"] == 3
+
+
+def test_add_points_compat_maps_border_to_edge():
+    mod = _widget_module()
+
+    class ViewerEdge:
+        def add_points(self, data, *, edge_width=None, edge_color=None, **kwargs):
+            return {
+                "data": data,
+                "edge_width": edge_width,
+                "edge_color": edge_color,
+                **kwargs,
+            }
+
+    out = mod._add_points_compat(
+        ViewerEdge(),
+        [[1, 2]],
+        border_width=0.25,
+        border_color="green",
+        size=4,
+    )
+    assert out["edge_width"] == 0.25
+    assert out["edge_color"] == "green"
+    assert out["size"] == 4
+
+
+def test_get_choice_layer_returns_selected_layer():
+    mod = _widget_module()
+
+    class Layer:
+        def __init__(self, name):
+            self.name = name
+
+    class Viewer:
+        def __init__(self):
+            self.layers = [Layer("A"), Layer("B")]
+
+    class Combo:
+        def currentText(self):
+            return "B"
+
+        def currentIndex(self):
+            return 1
+
+    class Obj:
+        def __init__(self):
+            self.viewer = Viewer()
+
+    assert mod._get_choice_layer(Obj(), Combo()) == 1
+
+
+def test_get_choice_layer_raises_for_invalid_selection():
+    mod = _widget_module()
+
+    class Layer:
+        def __init__(self, name):
+            self.name = name
+
+    class Viewer:
+        def __init__(self):
+            self.layers = [Layer("A"), Layer("B")]
+
+    class Combo:
+        def currentText(self):
+            return "missing"
+
+        def currentIndex(self):
+            return 99
+
+    class Obj:
+        def __init__(self):
+            self.viewer = Viewer()
+
+    with pytest.raises(ValueError):
+        mod._get_choice_layer(Obj(), Combo())

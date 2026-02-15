@@ -22,7 +22,7 @@ contributions:
       title: Linking spots
     - id: napari-trackpy.make_qwidget3
       python_name: napari_trackpy._widget:ColocalizationQWidget
-      title: Linking spots
+      title: Colocalize spots
   # readers:
   #   - command: napari-trackpy.get_reader
   #     accepts_directories: false
