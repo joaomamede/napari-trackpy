@@ -985,6 +985,9 @@ class IdentifyQWidget(QWidget):
             "question_suffix": None,
             "run_all_to_anchor": False,
         }
+        self._last_image_layer_names = [
+            layer.name for layer in self.viewer.layers if layer._type_string == "image"
+        ]
 
         _batch_files_btn = QPushButton('Batch Identify Files')
         _batch_files_btn.clicked.connect(self._batch_files)
@@ -1023,24 +1026,31 @@ class IdentifyQWidget(QWidget):
             return
         # update the combobox first
         current = self.layersbox.currentText()
+        image_layer_names = [
+            layer.name for layer in self.viewer.layers if layer._type_string == "image"
+        ]
+        image_list_changed = image_layer_names != getattr(self, "_last_image_layer_names", [])
+        self._last_image_layer_names = list(image_layer_names)
+
         self.layersbox.blockSignals(True)        # avoid re‑entrancy
         self.layersbox.clear()
-        for layer in self.viewer.layers:
-            if layer._type_string == "image":
-                self.layersbox.addItem(layer.name)
+        for name in image_layer_names:
+            self.layersbox.addItem(name)
         if current:
             self.layersbox.setCurrentText(current)
         self.layersbox.blockSignals(False)
 
-        # now rebuild the per‑channel grid
-        self._rebuild_batch_grid()
-        if getattr(self, "_batch_files_running", False):
-            frozen_cfg = getattr(self, "_batch_files_frozen_cfg", None)
-            if frozen_cfg is not None:
-                self._batch_cfg = dict(frozen_cfg)
-                self._apply_batch_config()
-        else:
-            self._load_identify_settings()
+        # Only reload per-image state when image layers changed.
+        # Adding/removing Points or Labels should not reset identify inputs.
+        if image_list_changed:
+            self._rebuild_batch_grid()
+            if getattr(self, "_batch_files_running", False):
+                frozen_cfg = getattr(self, "_batch_files_frozen_cfg", None)
+                if frozen_cfg is not None:
+                    self._batch_cfg = dict(frozen_cfg)
+                    self._apply_batch_config()
+            else:
+                self._load_identify_settings()
         self._update_time_bounds_for_selected_layer()
         
     # def _refresh_layers(self,_widget,_type='image'):
@@ -1248,6 +1258,10 @@ class IdentifyQWidget(QWidget):
         from .helpers_axes import infer_axes
         import trackpy as tp
         import pandas as pd
+
+        # QPushButton.clicked can pass a bool; treat it as no override.
+        if isinstance(minmass_override, bool):
+            minmass_override = None
         
         index_layer = _get_choice_layer(self,self.layersbox)
         self.viewer.layers[index_layer].name
@@ -1842,8 +1856,9 @@ class IdentifyQWidget(QWidget):
                 w_spin.widget().setValue(mass)
                 w_tick.widget().setChecked(checked)
 
-    def batch_on_click(self, progress_callback=None):
+    def batch_on_click(self, _checked=False, progress_callback=None):
         print(self.batch_grid_layout.count())
+        cb = progress_callback if callable(progress_callback) else None
 
         # Snapshot selections first so UI updates/signals cannot mutate values
         # mid-run.
@@ -1857,8 +1872,8 @@ class IdentifyQWidget(QWidget):
                 selected_rows.append((i, int(mass_item.widget().value())))
 
         if not selected_rows:
-            if progress_callback is not None:
-                progress_callback(0, 0, "no channels selected")
+            if cb is not None:
+                cb(0, 0, "no channels selected")
             return
 
         self._batch_running = True
@@ -1866,8 +1881,8 @@ class IdentifyQWidget(QWidget):
             total_rows = len(selected_rows)
             for idx, (row_idx, mass_value) in enumerate(selected_rows, start=1):
                 channel_name = self.layersbox.itemText(row_idx)
-                if progress_callback is not None:
-                    progress_callback(idx, total_rows, channel_name)
+                if cb is not None:
+                    cb(idx, total_rows, channel_name)
                 self.layersbox.setCurrentIndex(row_idx)
                 self.mass_slider.setValue(mass_value)
                 self._on_click(minmass_override=mass_value)
