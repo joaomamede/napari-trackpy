@@ -26,6 +26,13 @@ from qtpy.QtWidgets import (
 )
 from napari.qt.threading import thread_worker
 import numpy as np
+from .mask_measurements import (
+    available_intensity_backends,
+    available_mask_algorithms,
+    make_labels_trackpy_links,
+    measure_label_intensity,
+    release_backend_memory,
+)
 
 # viewer.layers[0].source.path
 
@@ -293,223 +300,6 @@ def _drop_invalid_coordinate_rows(df, coord_cols):
 #         #         # coords = np.dstack((j.particle,j.y,j.x))[0]
 #         #         return labels, coords
 #     return labels, pos
-
-##Numba doesn't work for 2D yet.
-from numba import jit, prange
-@jit(nopython=True, parallel=True)
-def fill_mask_numba(mask, positions, radius):
-    shape = mask.shape
-    for i in prange(len(positions)):
-        pz, py, px = positions[i]
-        for x in range(shape[2]):
-            for y in range(shape[1]):
-                for z in range(shape[0]):
-                    distance = np.sqrt((px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2)
-                    if distance <= radius:
-                        mask[z, y, x] = 1
-
-def fill_mask_cupy(mask, positions, radius):
-    import cupy as cp
-    shape = mask.shape
-    for i in range(len(positions)):
-        pz, py, px = positions[i]
-        x, y, z = cp.meshgrid(cp.arange(shape[2]), cp.arange(shape[1]), cp.arange(shape[0]))
-        distance = cp.sqrt((px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2)
-        mask[distance <= radius] = 1
-        
-        
-def make_labels_trackpy_links(shape,j,radius=5,_algo="GPU"):
-    """
-    Creates binary masks around given positions with a specified radius in a 3D space using PyOpenCL.
-
-    :param shape: Tuple of the output volume shape (Z, Y, X).
-    :param positions: NumPy array of positions (Z, Y, X).
-    :param radius: The radius around each position to fill in the mask.
-    :return: A 3D NumPy array representing the labeled masks. The positions as array
-    """
-    import trackpy as tp
-    import scipy.ndimage as ndi
-    from scipy.ndimage import binary_dilation
-    
-    if 'z' in j:
-    # "Need to loop each t and do one at a time"
-        pos = np.dstack((j.z,j.y,j.x))[0]#.astype(int)
-        print("3D",j)
-    else:
-        pos = np.dstack((j.y,j.x))[0]#.astype(int)
-        print("2D",j)
-    
-    if _algo == "GPU":
-        import cupy as cp
-        
-        pos_cp = cp.asarray(pos)
-
-        ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
-        ndim = len(shape)
-        # radius = validate_tuple(radius, ndim)
-        pos_cp = cp.atleast_2d(pos_cp)
-
-        # if include_edge:
-        in_mask = cp.array([cp.sum(((cp.indices(shape).T - p) / radius)**2, -1) <= 1
-                    for p in pos_cp])
-        # else:
-        #     in_mask = [np.sum(((np.indices(shape).T - p) / radius)**2, -1) < 1
-        #                for p in pos]
-        mask_total = cp.any(in_mask, axis=0).T
-        
-        ##if they overlap the labels won't match the points
-        #we can make np.ones * ID of the point and then np.max(axis=-1)
-        labels, nb = ndi.label(cp.asnumpy(mask_total))
-        # image * mask_cluster.astype(np.uint8)
-        
-        #this is super slow
-        # ~ masks = tp.masks.mask_image(coords,np.ones(image.shape),size/2)
-    elif _algo=='CPU':
-
-
-        ##this is what tp.masks.mask_image does maybe put a cupy here to make if faster.
-        ndim = len(shape)
-        # radius = validate_tuple(radius, ndim)
-        pos = np.atleast_2d(pos)
-        # if include_edge:
-        in_mask = np.array([np.sum(((np.indices(shape).T - p) / radius)**2, -1) <= 1
-                    for p in pos])
-        # else:
-        #     in_mask = [np.sum(((np.indices(shape).T - p) / radius)**2, -1) < 1
-        #                for p in pos]
-        mask_total = np.any(in_mask, axis=0).T
-        ##if they overlap the labels won't match the points
-        #we can make np.ones * ID of the point and then np.max(axis=-1)
-        labels, nb = ndi.label(mask_total)
-    elif _algo=='fast':
-    #This is faster
-        
-        # r = (radius-1)/2 # Radius of circles
-        # print(radius,r)
-    #     #make 3D compat
-        disk_mask = tp.masks.binary_mask(radius,len(shape))
-        # print(disk_mask)
-    #     # Initialize output array and set the maskcenters as 1s
-        out = np.zeros(shape,dtype=bool)
-
-        if 'z' in j:
-            pos = np.dstack((j.z,j.y,j.x))[0].astype(int)
-            pos = np.atleast_2d(pos)
-            print(pos)
-            out[pos[:,0],pos[:,1],pos[:,2]] = 1            
-
-        else:
-            pos = np.dstack((j.y,j.x))[0].astype(int)
-            pos = np.atleast_2d(pos)
-            print(pos)
-            out[pos[:,0],pos[:,1]] = 1
-    #     # Use binary dilation to get the desired output
-    
-        out = binary_dilation(out,disk_mask)
-
-        labels, nb = ndi.label(out)
-        print("Number of labels:",nb)
-        # if _round:
-        #     return labels, coords
-        # else:
-        #     if image.ndim == 2:
-        #         # coords = j.loc[:,['particle','frame','y','x']]
-        #         coords = j.loc[:,['frame','y','x']]
-        #         # coords = np.dstack((j.particle,j.y,j.x))[0]
-        #         return labels, coords
-    elif _algo == 'numba': 
-   
-        # Prepare data
-        mask = np.zeros(shape, dtype=np.uint8)
-        
-        # Fill mask using Numba
-        fill_mask_numba(mask, pos, radius)
-        
-        # Use label function from scipy to identify connected components
-        labels, _ = ndi.label(mask)
-
-    elif _algo == 'openCL':
-        print("Using openCL function")
-        import pyopencl as cl
-
-            # Prepare data
-        mask = np.zeros(shape, dtype=np.uint8)
-        positions_flat = pos.flatten().astype(np.float32)
-        radius = np.float32(radius)
-        
-        platform = cl.get_platforms()
-        my_gpu_devices = platform[0].get_devices(device_type=cl.device_type.GPU)
-        ctx = cl.Context(devices=my_gpu_devices)
-
-        # PyOpenCL setup
-    #     ctx = cl.create_some_context()
-        queue = cl.CommandQueue(ctx)
-        mf = cl.mem_flags
-
-        # Create buffers
-        mask_buf = cl.Buffer(ctx, mf.WRITE_ONLY | mf.COPY_HOST_PTR, hostbuf=mask)
-        positions_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=positions_flat)
-        
-        # Kernel code
-        if 'z' in j:
-            kernel_code = """
-            __kernel void fill_mask(__global uchar *mask, __global const float *positions, const float radius, const int num_positions) {
-                int x = get_global_id(0);
-                int y = get_global_id(1);
-                int z = get_global_id(2);
-                int width = get_global_size(0);
-                int height = get_global_size(1);
-                int depth = get_global_size(2);
-                int idx = x + y * width + z * width * height;
-                
-                for (int i = 0; i < num_positions; ++i) {
-                    float pz = positions[i * 3];
-                    float py = positions[i * 3 + 1];
-                    float px = positions[i * 3 + 2];
-                    
-                    float distance = sqrt(pow(px - x, 2) + pow(py - y, 2) + pow(pz - z, 2));
-                    if (distance <= radius) {
-                        mask[idx] = 1;
-                        break;
-                    }
-                }
-            }
-            """
-        else:
-            kernel_code = """
-            __kernel void fill_mask(__global uchar *mask, __global const float *positions, const float radius, const int num_positions) {
-                int x = get_global_id(0);
-                int y = get_global_id(1);
-                int width = get_global_size(0);
-                int height = get_global_size(1);
-                int idx = x + y * width;
-                
-                for (int i = 0; i < num_positions; ++i) {
-                    float py = positions[i * 2];
-                    float px = positions[i * 2 + 1];
-                    
-                    float distance = sqrt(pow(px - x, 2) + pow(py - y, 2));
-                    if (distance <= radius) {
-                        mask[idx] = 1;
-                        break;
-                    }
-                }
-            }
-            """
-        # Build kernel
-        prg = cl.Program(ctx, kernel_code).build()
-        
-        # Execute kernel
-        global_size = shape[::-1]  # Note: PyOpenCL uses column-major order, so we reverse the dimensions
-        prg.fill_mask(queue, global_size, None, mask_buf, positions_buf, radius, np.int32(len(pos)))
-        
-        # Read back the results
-        cl.enqueue_copy(queue, mask, mask_buf)
-        labels, nb = ndi.label(mask)
-        print("End of openCL function")
-    return labels, pos
-
-
 
 class IdentifyQWidget(QWidget):
     # your QWidget.__init__ can optionally request the napari viewer instance
@@ -1077,11 +867,25 @@ class IdentifyQWidget(QWidget):
         self.make_masks_box = QCheckBox()
         self.make_masks_box.setChecked(False)
         self.masks_option = QComboBox()
-        self.masks_option.addItems(["openCL","numba","subpixel GPU Cupy","subpixel CPU Numpy","coarse CPU",])
+        self._mask_algo_options = available_mask_algorithms()
+        self.masks_option.addItems([label for _, label in self._mask_algo_options])
+        self.masks_dict = {i: key for i, (key, _) in enumerate(self._mask_algo_options)}
+        if self._mask_algo_options:
+            numba_idx = next(
+                (i for i, (key, _) in enumerate(self._mask_algo_options) if key == "numba"),
+                0,
+            )
+            self.masks_option.setCurrentIndex(numba_idx)
+        self.intensity_option = QComboBox()
+        self._intensity_backend_options = available_intensity_backends()
+        self.intensity_option.addItems([label for _, label in self._intensity_backend_options])
+        self.intensity_dict = {i: key for i, (key, _) in enumerate(self._intensity_backend_options)}
         self.layout_masks.addWidget(label_masks)
         self.layout_masks.addWidget(self.make_masks_box)
+        self.layout_masks.addWidget(QLabel("Mask algo"))
         self.layout_masks.addWidget(self.masks_option)
-        self.masks_dict = {0:'openCL',1:'numba',2:'GPU',3:'CPU',4:'fast',}
+        self.layout_masks.addWidget(QLabel("Intensity"))
+        self.layout_masks.addWidget(self.intensity_option)
 
         btn = QPushButton("Identify Spots")
         btn.clicked.connect(self._on_click)
@@ -1273,63 +1077,171 @@ class IdentifyQWidget(QWidget):
         # return j
         
     
-    def make_masks(self):
+    def _selected_mask_algorithm(self):
+        if not self.masks_dict:
+            return "numba"
+        idx = self.masks_option.currentIndex()
+        return self.masks_dict.get(idx, next(iter(self.masks_dict.values())))
+
+    def _selected_intensity_backend(self):
+        if not self.intensity_dict:
+            return "cpu"
+        idx = self.intensity_option.currentIndex()
+        return self.intensity_dict.get(idx, next(iter(self.intensity_dict.values())))
+
+    def _image_slice_for_frame(self, layer, frame_idx):
+        from .helpers_axes import infer_axes
+
+        axes = infer_axes(layer)
+        if axes.t is None:
+            return np.asarray(layer.data), axes
+
+        t_max = max(0, int(layer.data.shape[axes.t]) - 1)
+        frame_idx = max(0, min(int(frame_idx), t_max))
+        sl = [slice(None)] * layer.data.ndim
+        sl[axes.t] = frame_idx
+        return np.asarray(layer.data[tuple(sl)]), axes
+
+    def make_masks(self, points_layer=None):
+        import gc
         import pandas as pd
-        # if self.viewer.layers[index_layer].scale[0] != 1:
-        index_layer = _get_choice_layer(self,self.layersbox)
+        from .helpers_axes import infer_axes
 
-        if self.viewer.layers.selection.active.data.shape[1] <= 3:
-            ##fix here to distinguish between ZYX TYX
-            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
-        elif self.viewer.layers.selection.active.data.shape[1] > 3:
-            # if self.viewer.layers[index_layer].scale[0] != 1
-            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
-            # else:
-                # df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
-        b = self.viewer.layers.selection.active.properties
-        for key in b.keys():
-            df[key] = b[key]
+        if points_layer is None:
+            points_layer = self.viewer.layers.selection.active
+        if points_layer is None or points_layer._type_string != "points":
+            raise ValueError("make_masks expects a points layer.")
 
-        masks = np.zeros(self.viewer.layers[index_layer].data.shape).astype('int64')
-        idx = []
-        # links.loc[:,['particle','frame','y','x']]
+        index_layer = _get_choice_layer(self, self.layersbox)
+        image_layer = self.viewer.layers[index_layer]
+        image_axes = infer_axes(image_layer)
 
+        points_data = np.asarray(points_layer.data)
+        if points_data.ndim != 2 or points_data.shape[1] < 3:
+            return np.zeros(image_layer.data.shape, dtype=np.uint32), pd.DataFrame(index=np.arange(len(points_data)))
 
-        for i in df.frame.unique():
-            i = int(i)
-            temp = df[df['frame'] == i].sort_values(by=['y'])
-            #0 returns mask, 1 index returns coords
-            self.masks_dict[self.masks_option.currentIndex()]
-            print("Doing Masks with option:",self.masks_option.currentIndex(), self.masks_dict[self.masks_option.currentIndex()])
-            if self.viewer.layers[index_layer].scale[0] == 1:
-                input_shape = self.viewer.layers[index_layer].data[i].shape
-            else: input_shape = self.viewer.layers[index_layer].data.shape
-            _diam = self._diameter_scalar()         # int no matter what user typed
-            _radius = (_diam / 2) - 0.5              # same formula you had before
+        if points_data.shape[1] <= 3:
+            df = pd.DataFrame(points_data, columns=["frame", "y", "x"])
+            coord_cols = ["frame", "y", "x"]
+        else:
+            df = pd.DataFrame(points_data, columns=["frame", "z", "y", "x"])
+            coord_cols = ["frame", "z", "y", "x"]
+        _append_layer_properties(df, getattr(points_layer, "properties", {}) or {})
 
-            mask_temp, idx_temp = make_labels_trackpy_links(
-                input_shape,
-                # self.viewer.lcp ayers[index_layer].data[i],
-                temp,
-                radius=_radius,
-                # _round=False,
-                _algo=self.masks_dict[self.masks_option.currentIndex()],
+        masks = np.zeros(image_layer.data.shape, dtype=np.uint32)
+        intensity_df = pd.DataFrame(index=df.index)
+        algo = self._selected_mask_algorithm()
+        backend = self._selected_intensity_backend()
+        _diam = self._diameter_scalar()
+        _radius = (_diam / 2.0) - 0.5
+
+        ratio = 1.0
+        try:
+            if image_axes.z is not None and image_axes.y is not None:
+                z_scale = float(image_layer.scale[image_axes.z])
+                y_scale = float(image_layer.scale[image_axes.y])
+                if z_scale > 0:
+                    ratio = max(1e-6, y_scale / z_scale)
+        except Exception:
+            ratio = 1.0
+
+        frame_series = pd.to_numeric(df["frame"], errors="coerce")
+        valid_coord_mask = np.isfinite(frame_series.to_numpy())
+        for col in coord_cols[1:]:
+            valid_coord_mask &= np.isfinite(pd.to_numeric(df[col], errors="coerce").to_numpy())
+        df["frame"] = frame_series.fillna(0).round().astype(int)
+
+        if image_axes.t is None:
+            frame_values = [0]
+        else:
+            frame_values = sorted(df.loc[valid_coord_mask, "frame"].unique().tolist())
+            if not frame_values:
+                frame_values = [0]
+
+        image_layers = [layer for layer in self.viewer.layers if layer._type_string == "image"]
+
+        for frame_counter, frame_idx in enumerate(frame_values, start=1):
+            frame_img = None
+            mask_temp = None
+            mask_fixed = None
+            temp = None
+            try:
+                temp = df[(df["frame"] == int(frame_idx)) & valid_coord_mask]
+                if temp.empty:
+                    continue
+
+                frame_img, _ = self._image_slice_for_frame(image_layer, frame_idx)
+                if frame_img.ndim not in (2, 3):
+                    continue
+
+                print(
+                    "Doing Masks with option:",
+                    self.masks_option.currentIndex(),
+                    algo,
+                    "for frame",
+                    int(frame_idx),
                 )
-                # temp,size=5-1)
-        #     print(mask_temp.max(),len(temp.index))
-        #     idx.append(idx_temp)
-            mask_fixed = np.copy(mask_temp)
-            ##this is needed when doing from links because all labels set as 'particles'
-            # for j in np.unique(mask_temp).astype('int'):
-            #     if j != 0:
-            #         # mask_fixed[mask_temp == j] = temp.iloc[j-1]['particle'].astype('int')
-            #         mask_fixed[mask_temp == j] = temp.iloc[j-1][:].astype('int')
-        #     print(np.unique(mask_fixed),temp['particle'].unique())
-            if self.viewer.layers[index_layer].scale[0] == 1:
-                masks[i,...] = mask_fixed
-            else: masks = mask_fixed
+                mask_temp, _ = make_labels_trackpy_links(
+                    frame_img.shape,
+                    temp,
+                    radius=_radius,
+                    ratio=ratio,
+                    _algo=algo,
+                )
+                mask_fixed = np.asarray(mask_temp, dtype=np.uint32)
 
-        return masks
+                if image_axes.t is None:
+                    masks = mask_fixed
+                else:
+                    sl = [slice(None)] * masks.ndim
+                    t_max = max(0, int(masks.shape[image_axes.t]) - 1)
+                    t_idx = max(0, min(int(frame_idx), t_max))
+                    sl[image_axes.t] = t_idx
+                    masks[tuple(sl)] = mask_fixed
+
+                row_index = temp.index.to_numpy(dtype=np.int64)
+                for img_layer in image_layers:
+                    try:
+                        intensity_image, _ = self._image_slice_for_frame(img_layer, frame_idx)
+                    except Exception:
+                        continue
+                    if intensity_image.shape != mask_fixed.shape:
+                        continue
+                    try:
+                        meas = measure_label_intensity(mask_fixed, intensity_image, backend=backend)
+                    except Exception as err:
+                        print(f"Could not measure intensities on {img_layer.name}: {err}")
+                        continue
+                    if meas is None or len(meas) == 0:
+                        continue
+
+                    suffix = img_layer.name.split("::")[-1].strip() or img_layer.name.strip()
+                    for stat_col in ("intensity_mean", "intensity_max", "intensity_min"):
+                        if stat_col not in meas.columns:
+                            continue
+                        out_col = f"{stat_col}::{suffix}"
+                        values = intensity_df.get(out_col)
+                        if values is None:
+                            intensity_df[out_col] = np.nan
+                        for _, row in meas.iterrows():
+                            lbl = int(row.get("label", 0))
+                            if lbl <= 0 or lbl > len(row_index):
+                                continue
+                            point_idx = int(row_index[lbl - 1])
+                            intensity_df.at[point_idx, out_col] = float(row[stat_col])
+            finally:
+                del frame_img
+                del mask_temp
+                del mask_fixed
+                del temp
+                if algo in ("gpu", "opencl"):
+                    release_backend_memory(algo)
+                if backend == "gpu":
+                    release_backend_memory("gpu")
+                if frame_counter % 5 == 0:
+                    gc.collect()
+
+        return masks, intensity_df
     
     # @thread_worker
     def _on_click(self, minmass_override=None):
@@ -1372,7 +1284,7 @@ class IdentifyQWidget(QWidget):
                 sl[axes.t] = t_idx
             if axes.z is not None:
                 sl[axes.z] = z_idx
-            return np.asarray(layer.data[tuple(sl)])
+            return layer.data[tuple(sl)]
 
         def _stack3d(t_idx=0):
             """Return a full Z‑stack (ZYX) at a given time index."""
@@ -1380,7 +1292,7 @@ class IdentifyQWidget(QWidget):
             if axes.t is not None:
                 sl[axes.t] = t_idx
             # leave Z slice(None) → full stack
-            return np.asarray(layer.data[tuple(sl)])
+            return layer.data[tuple(sl)]
 
         # ------------------------------------------------------------------
         # A)  TIME‑LAPSE  — run on **all** frames if the user ticked the box
@@ -1395,11 +1307,6 @@ class IdentifyQWidget(QWidget):
                 t0, t1 = t1, t0
             # Inclusive range to ensure the last selected frame is processed.
             t_range = range(t0, t1 + 1)
-            image_seq = (
-                [_plane2d(t_idx=t) for t in t_range]     # TYX
-                if axes.z is None
-                else [_stack3d(t_idx=t) for t in t_range]  # TZYX
-            )
 
             def _loc_worker(frame_idx, img):
                 import trackpy as tp
@@ -1421,11 +1328,22 @@ class IdentifyQWidget(QWidget):
                     raise RuntimeError("No ipyparallel engines available.")
                 v = rc.load_balanced_view()
                 print("Using", len(rc), "ipyparallel engines")
-                async_res = v.map(_loc_worker, list(t_range), image_seq)
-                results = async_res.get()
+                max_pending = max(2, int(len(rc) * 2))
+                pending = []
+                results = []
+                for frame_idx in t_range:
+                    img = _plane2d(t_idx=frame_idx) if axes.z is None else _stack3d(t_idx=frame_idx)
+                    pending.append(v.apply_async(_loc_worker, frame_idx, img))
+                    if len(pending) >= max_pending:
+                        results.append(pending.pop(0).get())
+                while pending:
+                    results.append(pending.pop(0).get())
             except Exception as err:
                 print(f"ipyparallel unavailable ({err}); falling back to local loop.")
-                results = [_loc_worker(frame_idx, img) for frame_idx, img in zip(t_range, image_seq)]
+                results = []
+                for frame_idx in t_range:
+                    img = _plane2d(t_idx=frame_idx) if axes.z is None else _stack3d(t_idx=frame_idx)
+                    results.append(_loc_worker(frame_idx, img))
 
             self.f = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
 
@@ -1451,6 +1369,10 @@ class IdentifyQWidget(QWidget):
                 img = _plane2d(t_idx=current_t)
             else:                                    # TZYX → full 3‑D stack
                 img = _stack3d(t_idx=current_t)
+            try:
+                img = img.compute()
+            except AttributeError:
+                pass
 
             self.f = tp.locate(img, diam, minmass=minmass, engine="numba")
             self.f["frame"] = current_t
@@ -1554,13 +1476,19 @@ class IdentifyQWidget(QWidget):
 
             self.btn2.setEnabled(True)
 
-            #auto_save depends on the last created spots layer, if it's done after make_masks, it segfaults
-            #Keep the same order or redo the code
-            if self.auto_save.isChecked():
-                self._save_results()
-
+            _masks = None
             if self.make_masks_box.isChecked():
-                _masks = self.make_masks()
+                _masks, intensity_df = self.make_masks(points_layer=self._points_layer)
+                if intensity_df is not None and len(intensity_df) == len(self._points_layer.data):
+                    merged_props = dict(getattr(self._points_layer, "properties", {}) or {})
+                    for col in intensity_df.columns:
+                        merged_props[col] = intensity_df[col].to_numpy()
+                    self._points_layer.properties = merged_props
+
+            if self.auto_save.isChecked():
+                self._save_results(layer=self._points_layer)
+
+            if _masks is not None:
                 self._masks_layer = self.viewer.add_labels(_masks)
                 self._masks_layer.scale = self.viewer.layers[index_layer].scale
 
@@ -2008,19 +1936,21 @@ class IdentifyQWidget(QWidget):
         )
         self._points_layer_filter.scale = self.viewer.layers[index_layer].scale
 
-    def _save_results(self):
+    def _save_results(self, layer=None):
         import pandas as pd
-        ##TODO
-        ##pull from points layer see example below
-        selected_layer = _get_choice_layer(self,self.layersbox)
-        # selected_layer = self.viewer.layers.selection
-        if self.viewer.layers.selection.active.data.shape[1] < 3:
+
+        layer = layer or self.viewer.layers.selection.active
+        if layer is None or getattr(layer, "_type_string", "") != "points":
+            print("No points layer selected to save.")
+            return
+
+        if layer.data.shape[1] < 3:
             #manbearpig time lapse vs Zstack
-            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','y','x'])
-        elif self.viewer.layers.selection.active.data.shape[1] >= 3:
-            df = pd.DataFrame(self.viewer.layers.selection.active.data, columns = ['frame','z','y','x'])
+            df = pd.DataFrame(layer.data, columns = ['frame','y','x'])
+        elif layer.data.shape[1] >= 3:
+            df = pd.DataFrame(layer.data, columns = ['frame','z','y','x'])
             
-        b = self.viewer.layers.selection.active.properties
+        b = layer.properties
         _append_layer_properties(df, b)
         coord_cols = ['frame', 'z', 'y', 'x'] if 'z' in df.columns else ['frame', 'y', 'x']
         df = _drop_invalid_coordinate_rows(df, coord_cols)
