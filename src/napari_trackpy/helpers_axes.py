@@ -38,8 +38,46 @@ def infer_axes(layer: napari.layers.Image) -> Axes:
 
     # ---------------- 4‑D   ------------------------------------------------
     if ndim == 4:
-        # convention in bioformats & AICS: T Z Y X
-        return Axes("tzyx", 0, 1, 2, 3)
+        # Try explicit metadata first (e.g. from AICS/BioFormats).
+        axis_spec = None
+        meta = getattr(layer, "metadata", {}) or {}
+        for key in ("axes", "axis_order", "dims", "dimension_order", "DimensionOrder"):
+            value = meta.get(key)
+            if isinstance(value, str) and len(value) == ndim:
+                axis_spec = value.upper()
+                break
+
+        if axis_spec is not None:
+            # If channel is present we cannot map directly to one image layer.
+            if "C" not in axis_spec and {"T", "Z", "Y", "X"}.issubset(set(axis_spec)):
+                return Axes(
+                    "tzyx",
+                    axis_spec.index("T"),
+                    axis_spec.index("Z"),
+                    axis_spec.index("Y"),
+                    axis_spec.index("X"),
+                )
+
+        # Heuristic fallback for TZYX vs ZTYX.
+        # pick Y/X as last two axes; resolve T/Z among first two axes.
+        scale0 = float(layer.scale[0])
+        scale1 = float(layer.scale[1])
+        n0 = int(layer.data.shape[0])
+        n1 = int(layer.data.shape[1])
+
+        # Time axis is frequently unit-scaled while z is not.
+        if np.isclose(scale0, 1.0) and not np.isclose(scale1, 1.0):
+            t_axis, z_axis = 0, 1
+        elif np.isclose(scale1, 1.0) and not np.isclose(scale0, 1.0):
+            t_axis, z_axis = 1, 0
+        else:
+            # Ambiguous: pick larger extent as time by default.
+            if n0 >= n1:
+                t_axis, z_axis = 0, 1
+            else:
+                t_axis, z_axis = 1, 0
+
+        return Axes("tzyx", t_axis, z_axis, 2, 3)
 
     # ---------------- fallback ---------------------------------------------
     raise ValueError(

@@ -784,6 +784,15 @@ class IdentifyQWidget(QWidget):
         total = max(1, int(os.cpu_count() or 1))
         return max(1, total - 2), total
 
+    def _set_ipcluster_button_state(self, running):
+        self._ipcluster_running = bool(running)
+        if self._ipcluster_running:
+            self.ipcluster_btn.setText("Stop ipcluster")
+            self.ipcluster_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserStop))
+        else:
+            self.ipcluster_btn.setText("Start ipcluster")
+            self.ipcluster_btn.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+
     def _make_batch_progress_dialog(self, total_steps):
         dlg = QDialog(self)
         dlg.setWindowTitle("Batch Processing Progress")
@@ -838,6 +847,12 @@ class IdentifyQWidget(QWidget):
             dlg.log_box.appendPlainText(str(log_message))
         QApplication.processEvents()
 
+    def _toggle_ipcluster(self):
+        if getattr(self, "_ipcluster_running", False):
+            self._stop_ipcluster()
+            return
+        self._start_ipcluster_dialog()
+
     def _start_ipcluster_dialog(self):
         import shutil
         import subprocess
@@ -879,6 +894,7 @@ class IdentifyQWidget(QWidget):
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            self._set_ipcluster_button_state(True)
             QMessageBox.information(
                 self,
                 "ipcluster",
@@ -886,6 +902,68 @@ class IdentifyQWidget(QWidget):
             )
         except Exception as err:
             QMessageBox.warning(self, "ipcluster", f"Could not start ipcluster: {err}")
+
+    def _stop_ipcluster(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("ipcluster") is None:
+            QMessageBox.warning(self, "ipcluster", "Could not find 'ipcluster' in PATH.")
+            return
+        try:
+            subprocess.Popen(
+                ["ipcluster", "stop"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self._set_ipcluster_button_state(False)
+            QMessageBox.information(self, "ipcluster", "Requested ipcluster stop.")
+        except Exception as err:
+            QMessageBox.warning(self, "ipcluster", f"Could not stop ipcluster: {err}")
+
+    def _update_time_bounds_for_selected_layer(self):
+        from .helpers_axes import infer_axes
+
+        if not hasattr(self, "min_timer") or not hasattr(self, "max_timer"):
+            return
+
+        prev_max_bound = int(self.max_timer.maximum())
+        prev_max_value = int(self.max_timer.value())
+        prev_min_value = int(self.min_timer.value())
+
+        try:
+            index_layer = _get_choice_layer(self, self.layersbox)
+            layer = self.viewer.layers[index_layer]
+            axes = infer_axes(layer)
+            if axes.t is not None:
+                max_t = max(0, int(layer.data.shape[axes.t]) - 1)
+            else:
+                max_t = 0
+        except Exception:
+            max_t = 0
+
+        self.min_timer.setRange(0, max_t)
+        self.max_timer.setRange(0, max_t)
+        self.min_timer.setSingleStep(1)
+        self.max_timer.setSingleStep(1)
+
+        # Keep user selections when possible, but initialize/expand max to last frame.
+        if prev_min_value > max_t:
+            self.min_timer.setValue(0)
+        else:
+            self.min_timer.setValue(prev_min_value)
+
+        if prev_max_bound == 0 and prev_max_value == 0:
+            # First-time initialization for this widget.
+            self.max_timer.setValue(max_t)
+        elif prev_max_value == prev_max_bound and max_t > prev_max_bound:
+            # If user was at previous end, keep them at new end.
+            self.max_timer.setValue(max_t)
+        elif prev_max_value > max_t:
+            self.max_timer.setValue(max_t)
+        else:
+            self.max_timer.setValue(prev_max_value)
         
             
     def __init__(self, napari_viewer):
@@ -977,21 +1055,21 @@ class IdentifyQWidget(QWidget):
         # l_min_time.setText("Mass Threshold")
         l_max_time = QLabel("Max Time")
         self.min_timer = QSpinBox()
-        self.min_timer.setRange(0,int(self.viewer.dims.range[0][0]))
-        self.min_timer.setSingleStep(int(self.viewer.dims.range[0][2]))
+        self.min_timer.setRange(0, 0)
+        self.min_timer.setSingleStep(1)
         self.min_timer.setValue(0)
         self.max_timer = QSpinBox()
-        self.max_timer.setRange(0,int(self.viewer.dims.range[0][1]))
-        self.max_timer.setSingleStep(int(self.viewer.dims.range[0][2]))
-        self.max_timer.setValue(int(self.viewer.dims.range[0][1]))
+        self.max_timer.setRange(0, 0)
+        self.max_timer.setSingleStep(1)
+        self.max_timer.setValue(0)
         self.layoutH2.addWidget(l_min_time)
         self.layoutH2.addWidget(self.min_timer)
         self.layoutH2.addWidget(l_max_time)
         self.layoutH2.addWidget(self.max_timer)
 
         self.ipcluster_btn = QPushButton("Start ipcluster")
-        self.ipcluster_btn.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
-        self.ipcluster_btn.clicked.connect(self._start_ipcluster_dialog)
+        self.ipcluster_btn.clicked.connect(self._toggle_ipcluster)
+        self._set_ipcluster_button_state(False)
 
         label_masks = QLabel()
         label_masks.setText("Make Masks?")
@@ -1108,6 +1186,7 @@ class IdentifyQWidget(QWidget):
         _batch_files_btn.clicked.connect(self._batch_files)
         self.layout().addWidget(_batch_files_btn)
         self._load_identify_settings()
+        self._update_time_bounds_for_selected_layer()
 
 
     def open_file_dialog(self):
@@ -1158,6 +1237,7 @@ class IdentifyQWidget(QWidget):
                 self._apply_batch_config()
         else:
             self._load_identify_settings()
+        self._update_time_bounds_for_selected_layer()
         
     # def _refresh_layers(self,_widget,_type='image'):
     #     i = _widget.currentIndex()
@@ -1188,6 +1268,7 @@ class IdentifyQWidget(QWidget):
             self._load_identify_settings(index_layer=index_layer)
         except Exception:
             pass
+        self._update_time_bounds_for_selected_layer()
         # self.llayer.setText(
         # return j
         
